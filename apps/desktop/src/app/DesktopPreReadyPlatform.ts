@@ -45,6 +45,7 @@ export const resolveEarlyLinuxElectronOptionsFromProcess = (
     homeDirectory,
     joinPath: NodePath.posix.join,
     readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
+    hasState: NodeFS.existsSync,
   });
 
 export class DesktopPreReadyElectronOptions extends Context.Service<
@@ -83,6 +84,7 @@ export const make = Effect.gen(function* () {
         joinPath: NodePath.posix.join,
         commandLine: Electron.app.commandLine,
         readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
+        hasState: NodeFS.existsSync,
         writeFileString: (path, value) => {
           NodeFS.mkdirSync(NodePath.posix.dirname(path), { recursive: true });
           NodeFS.writeFileSync(path, value, "utf8");

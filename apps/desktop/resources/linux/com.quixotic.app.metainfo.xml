@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.quixotic.app</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Quixotic</name>
+  <summary>异想天开的想法要在这里实现 — Desktop GUI for coding agents</summary>
+  <developer id="com.quixotic">
+    <name>Quixotic Contributors</name>
+  </developer>
+  <description>
+    <p>
+      Quixotic is an unofficial community fork derived from T3 Code (MIT License) for running
+      local coding agents, reviewing code changes, and managing projects. It removes remote
+      product telemetry and uses isolated local state directories.
+    </p>
+    <p>
+      Not affiliated with or endorsed by T3 Tools Inc.
+    </p>
+  </description>
+  <launchable type="desktop-id">quixotic.desktop</launchable>
+  <icon type="stock">quixotic</icon>
+  <provides>
+    <binary>quixotic</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <url type="homepage">https://github.com/linianchen666/Quixotic</url>
+  <url type="bugtracker">https://github.com/linianchen666/Quixotic/issues</url>
+  <url type="vcs-browser">https://github.com/linianchen666/Quixotic</url>
+</component>

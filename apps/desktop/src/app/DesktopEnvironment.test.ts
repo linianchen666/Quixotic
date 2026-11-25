@@ -2,6 +2,8 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -13,9 +15,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Quixotic.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/Quixotic.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -68,8 +70,31 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.t3/dev");
-      assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
+      assert.equal(development.stateDir, "/Users/alice/.quixotic/dev");
+      assert.equal(production.stateDir, "/Users/alice/.quixotic/userdata");
     }),
+  );
+  it.effect(
+    "opens the existing T3 Code state on a packaged upgrade and prefers Quixotic or an explicit home",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homeDirectory = yield* fs.makeTempDirectoryScoped();
+        const legacy = path.join(homeDirectory, ".t3", "userdata");
+        const current = path.join(homeDirectory, ".quixotic", "userdata");
+        const input = { homeDirectory, isPackaged: true, platform: "linux" } as const;
+        yield* fs.makeDirectory(legacy, { recursive: true });
+        yield* fs.writeFileString(path.join(legacy, "statev2.sqlite"), "");
+        assert.equal((yield* makeEnvironment(input)).stateDir, legacy);
+        const configured = path.join(homeDirectory, "custom");
+        assert.equal(
+          (yield* makeEnvironment(input, { T3CODE_HOME: configured })).stateDir,
+          path.join(configured, "userdata"),
+        );
+        yield* fs.makeDirectory(current, { recursive: true });
+        yield* fs.writeFileString(path.join(current, "statev2.sqlite"), "");
+        assert.equal((yield* makeEnvironment(input)).stateDir, current);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

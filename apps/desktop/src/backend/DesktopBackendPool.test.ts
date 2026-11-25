@@ -123,6 +123,9 @@ function layerPool(
     readonly backend?: Effect.Success<ReturnType<typeof makeFakeBackendProcess>>;
   } = {},
 ): Layer.Layer<DesktopBackendPool.DesktopBackendPool> {
+  const layerFileSystem = FileSystem.layerNoop(
+    options.fileSystem ?? { exists: () => Effect.succeed(true) },
+  );
   return DesktopBackendPool.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -138,11 +141,15 @@ function layerPool(
           runningUnderArm64Translation: false,
         }).pipe(
           Layer.provide(
-            Layer.mergeAll(Path.layer, DesktopConfig.layerTest({ T3CODE_HOME: "/test-home" })),
+            Layer.mergeAll(
+              Path.layer,
+              DesktopConfig.layerTest({ T3CODE_HOME: "/test-home" }),
+              layerFileSystem,
+            ),
           ),
           Layer.orDie,
         ),
-        FileSystem.layerNoop(options.fileSystem ?? { exists: () => Effect.succeed(true) }),
+        layerFileSystem,
         Path.layer,
         options.backend?.layer ??
           Layer.succeed(

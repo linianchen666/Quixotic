@@ -1,4 +1,3 @@
-/* oxlint-disable t3code/no-global-process-runtime -- Standalone setup must run before workspace dependencies are installed. */
 // @effect-diagnostics nodeBuiltinImport:off - standalone bootstrap also runs before dependencies are installed.
 // @effect-diagnostics globalConsole:off globalFetch:off globalDate:off - interactive setup and endpoint verification.
 import * as NodeCrypto from "node:crypto";
@@ -84,7 +83,7 @@ const prompt = NodeReadlinePromises.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
-let endpoint = process.env.T3_CACHE_SETUP_URL || defaultEndpoint;
+let endpoint = process.env.T3_CACHE_SETUP_URL || defaultEndpoint || "";
 let name = process.env.T3_CACHE_SETUP_NAME || credentials[endpoint]?.name;
 let token = process.env.T3_CACHE_SETUP_TOKEN || credentials[endpoint]?.token;
 const initialEndpoint = endpoint;
@@ -135,7 +134,7 @@ try {
 } finally {
   prompt.close();
 }
-if (!name || !token || !/^[a-z0-9-]{1,64}$/.test(name) || token.length < 32)
+if (!endpoint || !name || !token || !/^[a-z0-9-]{1,64}$/.test(name) || token.length < 32)
   throw new Error("A valid developer name and credential token are required.");
 const url = new URL(endpoint);
 if (
@@ -155,26 +154,18 @@ if (
     "Use an HTTPS cache endpoint without embedded credentials, query, or fragment (HTTP is only allowed on loopback).",
   );
 endpoint = url.href.replace(/\/$/, "");
-const response = await fetch(`${endpoint}/telemetry`, {
+const response = await fetch(`${endpoint}/fetch`, {
   method: "POST",
   headers: {
     Authorization: `Basic ${Buffer.from(`${name}:${token}`).toString("base64")}`,
-    "Content-Type": "application/json",
+    "Content-Type": "application/cbor",
   },
-  body: JSON.stringify({
-    id: NodeCrypto.randomBytes(32).toString("hex"),
-    recordedAt: Date.now(),
-    host: NodeOS.hostname(),
-    platform: NodeOS.platform(),
-    arch: NodeOS.arch(),
-    ci: false,
-    runId: "setup",
-    tasks: [],
-  }),
+  // An empty CBOR map is rejected only after the cache authenticates the request.
+  body: Uint8Array.of(0xa0),
   signal: AbortSignal.timeout(10_000),
 });
 await response.body?.cancel();
-if (!response.ok)
+if (response.status !== 400)
   throw new Error(`Credential verification failed (${response.status}); nothing was installed.`);
 
 const candidates = [NodePath.join(root, "node_modules/vite-plus/dist/bin.js")];
@@ -215,8 +206,6 @@ await NodeFSP.writeFile(NodePath.join(installed, "package.json"), '{"type":"modu
 for (const file of [
   "runHook.ts",
   "remoteCache.ts",
-  "flush.ts",
-  "telemetry.ts",
   "nativeHook.js",
   "nativeRunHook.js",
   "preload.mjs",

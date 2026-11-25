@@ -149,9 +149,9 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       archivePath,
       archiveSha,
       runtimeId,
-      runtimeParent: `${work}/home/.t3/wsl-runtime`,
-      runtimeRoot: `${work}/home/.t3/wsl-runtime/${runtimeId}`,
-      serverEntry: `${work}/home/.t3/wsl-runtime/${runtimeId}/t3`,
+      runtimeParent: `${work}/home/.quixotic/wsl-runtime`,
+      runtimeRoot: `${work}/home/.quixotic/wsl-runtime/${runtimeId}`,
+      serverEntry: `${work}/home/.quixotic/wsl-runtime/${runtimeId}/t3`,
       installScript,
       install: (archive?: string, sha?: string, t3Home?: string | null) =>
         runShell(installScript(archive, sha, t3Home)),
@@ -206,7 +206,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     const install = fixture.install(undefined, undefined, t3Home);
     expect(install.status, install.stderr).toBe(0);
     expect(parseWslRuntimeRoot(install.stdout)).toBe(`${t3Home}/wsl-runtime/${fixture.runtimeId}`);
-    expect(runShell(`test ! -e ${sh(`${fixture.work}/home/.t3`)}`).status).toBe(0);
+    expect(runShell(`test ! -e ${sh(`${fixture.work}/home/.quixotic`)}`).status).toBe(0);
 
     const probe = runShell(
       [
@@ -216,6 +216,21 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     );
     expect(probe.status, probe.stderr).toBe(0);
     expect(parseT3Home(probe.stdout)).toBe(t3Home);
+  });
+
+  it("keeps the existing T3 Code database when no Quixotic database exists", () => {
+    const fixture = createFixture();
+    const home = `${fixture.work}/home`;
+    const probe = runShell(
+      [
+        `mkdir -p ${sh(`${home}/.t3/userdata`)}`,
+        `touch ${sh(`${home}/.t3/userdata/statev2.sqlite`)}`,
+        `bash() { ( export HOME=${sh(home)}; unset T3CODE_HOME; eval "$2" ); }`,
+        buildWslRuntimeProbeScript(),
+      ].join("\n"),
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(parseT3Home(probe.stdout)).toBe(`${home}/.t3`);
   });
 
   it("keeps the inherited PATH when bash is unavailable", () => {
@@ -278,7 +293,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "set -eu",
         `printf '%s' ${sh(brokenEntry)} > ${sh(fixture.serverEntry)}`,
         `chmod +x ${sh(fixture.serverEntry)}`,
-        `sha256sum ${sh(fixture.serverEntry)} | cut -d ' ' -f 1 > ${sh(`${fixture.runtimeRoot}/.t3code-wsl-runtime-ready`)}`,
+        `sha256sum ${sh(fixture.serverEntry)} | cut -d ' ' -f 1 > ${sh(`${fixture.runtimeRoot}/.quixotic-wsl-runtime-ready`)}`,
       ].join("\n"),
     );
     expect(corrupt.status, corrupt.stderr).toBe(0);
@@ -390,8 +405,8 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "set -eu",
         `runtime_parent=${sh(fixture.runtimeParent)}`,
         'mkdir -p "$runtime_parent/sha256-current" "$runtime_parent/sha256-previous"',
-        'printf ready > "$runtime_parent/sha256-current/.t3code-wsl-runtime-ready"',
-        'printf ready > "$runtime_parent/sha256-previous/.t3code-wsl-runtime-ready"',
+        'printf ready > "$runtime_parent/sha256-current/.quixotic-wsl-runtime-ready"',
+        'printf ready > "$runtime_parent/sha256-previous/.quixotic-wsl-runtime-ready"',
         `touch -d "10 minutes ago" ${sh(fixture.runtimeRoot)}`,
         'touch -d "1 minute ago" "$runtime_parent/sha256-previous"',
         `cat > ${sh(`${fixture.work}/select.sh`)} <<'T3CODE_SELECT_SCRIPT'`,
@@ -505,9 +520,9 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "set -eu",
         "work=$(mktemp -d)",
         'home="$work/home"',
-        'runtime_parent="$home/.t3/wsl-runtime"',
+        'runtime_parent="$home/.quixotic/wsl-runtime"',
         'mkdir -p "$runtime_parent"',
-        'make_ready() { mkdir -p "$runtime_parent/$1"; printf ready > "$runtime_parent/$1/.t3code-wsl-runtime-ready"; }',
+        'make_ready() { mkdir -p "$runtime_parent/$1"; printf ready > "$runtime_parent/$1/.quixotic-wsl-runtime-ready"; }',
         "make_ready sha256-current",
         "make_ready sha256-previous",
         "make_ready sha256-active",

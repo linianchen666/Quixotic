@@ -271,16 +271,20 @@ const AGENT_FEEDBACK_CHOICES: ReadonlyArray<{
   readonly label: string;
   readonly description: string;
 }> = [
-  { mode: "off", label: msg("Off"), description: msg("Agents send no feedback to the T3 team.") },
+  {
+    mode: "off",
+    label: msg("Off"),
+    description: msg("Agents do not record local feedback reports."),
+  },
   {
     mode: "on-request",
     label: msg("When I ask"),
-    description: msg("When you ask, you see a short report and send it if you approve."),
+    description: msg("When you ask, you see a short report and save it locally if you approve."),
   },
   {
     mode: "auto",
     label: msg("Automatic"),
-    description: msg("Agents also report T3 Code problems they hit on their own."),
+    description: msg("Agents also save local feedback reports on problems they hit on their own."),
   },
 ];
 
@@ -339,9 +343,9 @@ function AgentFeedbackSection() {
       })}
       <Text className="px-2 text-sm text-foreground-muted">
         <T>
-          Reports go to the T3 team. A report you ask for is shown to you first in a card, with an
-          outline of recent turns. Turn on Include the conversation there to add the messages of the
-          turns the report is about.
+          Reports are stored locally only (remote telemetry is disabled). A report you ask for is
+          shown to you first in a card, with an outline of recent turns. Turn on Include the
+          conversation there to add the messages of the turns the report is about.
         </T>
       </Text>
     </View>

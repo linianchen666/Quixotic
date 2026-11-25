@@ -11,6 +11,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import sharp from "sharp";
 
+import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+
 type IconVariant = "dev" | "nightly" | "prod";
 
 const ADAPTIVE_CANVAS = 432;
@@ -87,7 +89,7 @@ const renderForeground = Effect.fn("androidIcons.renderForeground")(function* (
   repositoryRoot: string,
   size: number,
 ) {
-  const text = yield* readLayerSource(repositoryRoot, "prod", "text.svg");
+  const text = yield* readLayerSource(repositoryRoot, "dev", "text.svg");
   const paths = text.match(/<path[^>]*\/>/g) ?? [];
   return yield* rasterize(
     "foreground",
@@ -174,12 +176,41 @@ const renderBackground = Effect.fn("androidIcons.renderBackground")(function* (
   }
 });
 
+const renderProductionForeground = Effect.fn("androidIcons.renderProductionForeground")(function* (
+  repositoryRoot: string,
+  size: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const source = yield* fs.readFile(
+    path.join(repositoryRoot, BRAND_ASSET_PATHS.productionLinuxIconPng),
+  );
+  const imageSize = Math.round(size * 0.64);
+  return yield* Effect.tryPromise({
+    try: () =>
+      sharp(source)
+        .resize(imageSize, imageSize)
+        .extend({
+          top: Math.floor((size - imageSize) / 2),
+          bottom: Math.ceil((size - imageSize) / 2),
+          left: Math.floor((size - imageSize) / 2),
+          right: Math.ceil((size - imageSize) / 2),
+          background: "#00000000",
+        })
+        .png()
+        .toBuffer(),
+    catch: (cause) => new AndroidIconRenderError({ layer: "prod-foreground", cause }),
+  });
+});
+
 const renderSplashIcon = Effect.fn("androidIcons.renderSplashIcon")(function* (
   repositoryRoot: string,
   variant: IconVariant,
 ) {
   const background = yield* renderBackground(repositoryRoot, variant, SPLASH_CANVAS);
-  const foreground = yield* renderForeground(repositoryRoot, SPLASH_CANVAS);
+  const foreground = yield* variant === "prod"
+    ? renderProductionForeground(repositoryRoot, SPLASH_CANVAS)
+    : renderForeground(repositoryRoot, SPLASH_CANVAS);
   return yield* composite(`${variant}-splash`, background, [{ input: foreground }]);
 });
 
@@ -189,6 +220,10 @@ const exportAndroidIcons = Effect.gen(function* () {
   const repositoryRoot = path.resolve(import.meta.dirname, "..");
   const outputs = [
     ["android-icon-foreground.png", yield* renderForeground(repositoryRoot, ADAPTIVE_CANVAS)],
+    [
+      "android-icon-foreground-prod.png",
+      yield* renderProductionForeground(repositoryRoot, ADAPTIVE_CANVAS),
+    ],
     [
       "android-icon-background-dev.png",
       yield* renderDevelopmentBackground(repositoryRoot, ADAPTIVE_CANVAS),
