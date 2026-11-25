@@ -98,7 +98,7 @@ const layerDesktopEnvironment = Layer.unwrap(
     );
     const platform = yield* HostProcess.Platform;
     const processArch = yield* HostProcess.Architecture;
-    return DesktopEnvironment.layer({
+    return DesktopEnvironment.layerPreReady({
       dirname: __dirname,
       homeDirectory: NodeOS.homedir(),
       platform,

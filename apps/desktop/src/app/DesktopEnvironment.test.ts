@@ -2,6 +2,7 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -40,6 +41,33 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("resolves the packaged data directory without yielding before Electron is ready", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDirectory = yield* fs.makeTempDirectoryScoped();
+      const legacyState = path.join(homeDirectory, ".t3", "userdata");
+      yield* fs.makeDirectory(legacyState, { recursive: true });
+      yield* fs.writeFileString(path.join(legacyState, "statev2.sqlite"), "");
+
+      const startup = yield* DesktopEnvironment.DesktopEnvironment.pipe(
+        Effect.provide(
+          DesktopEnvironment.layerPreReady({
+            ...defaultInput,
+            homeDirectory,
+            platform: "win32",
+            isPackaged: true,
+          }).pipe(Layer.provide(Layer.mergeAll(NodePath.layerPosix, DesktopConfig.layerTest({})))),
+        ),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      assert.isDefined(startup.pollUnsafe());
+      const environment = yield* Fiber.join(startup);
+      assert.equal(environment.stateDir, legacyState);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodePath.layerPosix))),
+  );
+
   it.effect("uses the packaged Windows server sidecar as the backend root", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment({

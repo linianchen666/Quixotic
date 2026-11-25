@@ -14,6 +14,7 @@ import * as Path from "effect/Path";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
+import * as DesktopPreReadyFileSystem from "./DesktopPreReadyFileSystem.ts";
 import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
 import {
   desktopStateDatabase,
@@ -298,3 +299,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
 
 export const layer = (input: MakeDesktopEnvironmentInput) =>
   Layer.effect(DesktopEnvironment, make(input));
+
+// Clerk registers its privileged scheme before Electron emits ready. The database
+// existence checks must not yield to Electron's event loop during startup.
+export const layerPreReady = (input: MakeDesktopEnvironmentInput) =>
+  layer(input).pipe(Layer.provide(DesktopPreReadyFileSystem.layer));
