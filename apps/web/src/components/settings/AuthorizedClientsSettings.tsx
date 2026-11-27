@@ -2,7 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
-import { PlugIcon, PlusIcon, QrCodeIcon } from "lucide-react";
+import { LaptopIcon, PlusIcon, QrCodeIcon, SmartphoneIcon } from "lucide-react";
 import { type ReactNode, memo, useId, useRef, useState } from "react";
 import { T, useGT, useMessages } from "gt-react";
 import {
@@ -14,6 +14,8 @@ import {
   AuthStandardClientScopes,
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
+  normalizeDevicePairingAddress,
+  type DevicePairingAddressKind,
   type AuthEnvironmentScope,
   type AuthGrantScope,
   type AuthPairingCredentialResult,
@@ -25,6 +27,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
+import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
@@ -63,7 +66,6 @@ import { readEnvironmentScope } from "~/state/session";
 import { useManagedPolicy, usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { ManagedControl } from "../ManagedPolicy";
-import { openUseInAnotherApp } from "../mcp/UseInAnotherAppDialog";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 import {
@@ -136,6 +138,7 @@ function endpointRowClassName(isAvailable: boolean) {
 type PairingLinkListRowProps = {
   pairingLink: ServerPairingLinkRecord;
   credential: string | undefined;
+  fixedPairingUrl: string | undefined;
   defaultShareOpen: boolean;
   /** Whether this page is served by the environment the link pairs with. */
   servedByEnvironment: boolean;
@@ -150,6 +153,7 @@ type PairingLinkListRowProps = {
 const PairingLinkListRow = memo(function PairingLinkListRow({
   pairingLink,
   credential,
+  fixedPairingUrl,
   defaultShareOpen,
   servedByEnvironment,
   endpointUrl,
@@ -188,7 +192,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       readonly detail: string;
       readonly qrShareable: boolean;
     }> = [];
-    if (!credential) return options;
+    if (!credential || fixedPairingUrl !== undefined) return options;
     for (const endpoint of endpoints) {
       if (endpoint.status === "unavailable") {
         continue;
@@ -206,6 +210,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
     return options;
   })();
   const shareablePairingUrl =
+    fixedPairingUrl ??
     endpointPairingUrl ??
     (credential && endpointUrl != null && endpointUrl !== ""
       ? (hostedPairingUrl ?? resolveDesktopPairingUrl(endpointUrl, credential))
@@ -587,8 +592,9 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
 });
 
 type AuthorizedClientsHeaderActionProps = {
+  devicePairingAddresses?: Readonly<Record<DevicePairingAddressKind, string>>;
   environmentId: EnvironmentId;
-  onPairingLinkCreated: (result: AuthPairingCredentialResult) => void;
+  onPairingLinkCreated: (result: AuthPairingCredentialResult, pairingUrl?: string) => void;
   clientSessions: ReadonlyArray<ServerClientSessionRecord> | null;
   isRevokingOtherClients: boolean;
   onRevokeOtherClients: () => void;
@@ -596,6 +602,7 @@ type AuthorizedClientsHeaderActionProps = {
 };
 
 export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderAction({
+  devicePairingAddresses,
   environmentId,
   onPairingLinkCreated,
   clientSessions,
@@ -614,6 +621,23 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
     reportFailure: false,
   });
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [pairingKind, setPairingKind] = useState<DevicePairingAddressKind>("easyTier");
+  const [addressInput, setAddressInput] = useState("");
+  const addressId = useId();
+  const [devicePairingUrl, setDevicePairingUrl] = useState<string | null>(null);
+  const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const { copyToClipboard: copyDevicePairingUrl, isCopied: pairingUrlCopied } = useCopyToClipboard({
+    onError: () => toastManager.add({ type: "error", title: gt("Could not copy pairing URL") }),
+  });
+  const easyTier = pairingKind === "easyTier";
+  const easyTierPairingTitle = gt("Pair an EasyTier computer");
+  const phonePairingTitle = gt("Pair a phone");
+  const savedAddress = devicePairingAddresses?.[pairingKind] ?? "";
+  const normalizedSavedAddress = normalizeDevicePairingAddress(pairingKind, savedAddress) ?? "";
+  const address = normalizeDevicePairingAddress(pairingKind, addressInput);
+  const clearedAddress = addressInput.trim() === "";
+  const validAddress = clearedAddress || address !== null;
+  const addressChanged = (address ?? "") !== normalizedSavedAddress;
   const pairingDialogSessionRef = useRef(0);
   const [pairingLabel, setPairingLabel] = useState("");
   const [pairingScopes, setPairingScopes] = useState<ReadonlyArray<AuthGrantScope>>([
@@ -629,14 +653,47 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
     if (!open) {
       pairingDialogSessionRef.current += 1;
       setPairingLabel("");
+      setDevicePairingUrl(null);
       setPairingScopes(
         AuthStandardClientScopes.filter((scope) => delegatableScopes.includes(scope)),
       );
     }
   };
 
+  const openDevicePairing = (kind: DevicePairingAddressKind) => {
+    setPairingKind(kind);
+    setAddressInput(devicePairingAddresses?.[kind] ?? "");
+    setDialogOpen(true);
+  };
+
+  const persistAddress = (value: string) =>
+    new Promise<boolean>((resolve) =>
+      updateSettings(
+        easyTier ? { easyTierPairingAddress: value } : { publicPairingAddress: value },
+        { onSaved: () => resolve(true), onFailed: () => resolve(false) },
+      ),
+    );
+
+  const saveAddress = async () => {
+    if (!validAddress || !addressChanged || isCreatingPairingLink) return;
+    const dialogSession = pairingDialogSessionRef.current;
+    setIsCreatingPairingLink(true);
+    try {
+      if (
+        (await persistAddress(address ?? "")) &&
+        dialogSession === pairingDialogSessionRef.current
+      ) {
+        handlePairingDialogOpenChange(false);
+      }
+    } finally {
+      setIsCreatingPairingLink(false);
+    }
+  };
+
   const handleCreatePairingLink = async () => {
     if (
+      isCreatingPairingLink ||
+      (devicePairingAddresses !== undefined && address === null) ||
       selectedScopes.length === 0 ||
       !readEnvironmentScope(environmentId, AuthAccessWriteScope) ||
       !selectedScopes.every((scope) => readEnvironmentScope(environmentId, scope))
@@ -644,31 +701,47 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
       return;
     const dialogSession = pairingDialogSessionRef.current;
     setIsCreatingPairingLink(true);
-    const trimmedLabel = pairingLabel.trim();
-    const result = await createPairingCredential({
-      environmentId,
-      input: { ...(trimmedLabel ? { label: trimmedLabel } : {}), scopes: selectedScopes },
-    });
-    if (result._tag === "Success") {
-      onPairingLinkCreated(result.value);
-      if (dialogSession === pairingDialogSessionRef.current) {
-        handlePairingDialogOpenChange(false);
+    try {
+      if (devicePairingAddresses !== undefined && address !== null && addressChanged) {
+        if (!(await persistAddress(address)) || dialogSession !== pairingDialogSessionRef.current) {
+          return;
+        }
       }
-    } else if (!isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      const message =
-        error instanceof Error
-          ? (thrownErrorMessage(error, resolveMessage) ?? error.message)
-          : gt("Failed to create pairing URL.");
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: gt("Could not create pairing URL"),
-          description: message,
-        }),
-      );
+      const trimmedLabel = pairingLabel.trim();
+      const result = await createPairingCredential({
+        environmentId,
+        input: { ...(trimmedLabel ? { label: trimmedLabel } : {}), scopes: selectedScopes },
+      });
+      if (result._tag === "Success") {
+        const pairingUrl =
+          devicePairingAddresses !== undefined && address !== null
+            ? resolveDesktopPairingUrl(address, result.value.credential)
+            : undefined;
+        onPairingLinkCreated(result.value, pairingUrl);
+        if (dialogSession === pairingDialogSessionRef.current) {
+          if (pairingUrl !== undefined) {
+            setDevicePairingUrl(pairingUrl);
+          } else {
+            handlePairingDialogOpenChange(false);
+          }
+        }
+      } else if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        const message =
+          error instanceof Error
+            ? (thrownErrorMessage(error, resolveMessage) ?? error.message)
+            : gt("Failed to create pairing URL.");
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: gt("Could not create pairing URL"),
+            description: message,
+          }),
+        );
+      }
+    } finally {
+      setIsCreatingPairingLink(false);
     }
-    setIsCreatingPairingLink(false);
   };
 
   const togglePairingScope = (scope: AuthGrantScope, checked: boolean) => {
@@ -677,21 +750,30 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
-      <Button size="xs" variant="outline" onClick={() => openUseInAnotherApp(environmentId)}>
-        <PlugIcon className="size-3" />
-        <T>Use in another app (MCP)</T>
-      </Button>
-      <Button
-        size="xs"
-        variant="destructive-outline"
-        disabled={isRevokingOtherClients || !canRevokeOtherClients(clientSessions)}
-        onClick={() => void onRevokeOtherClients()}
-      >
-        {isRevokingOtherClients ? gt("Revoking…") : gt("Revoke others")}
-      </Button>
-      {pairingDenial !== undefined ? (
+      {devicePairingAddresses !== undefined ? (
         <ManagedControl reason={pairingDenial}>
-          <Button size="xs" variant="default" disabled>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="xs"
+              disabled={pairingDenial !== undefined}
+              onClick={() => openDevicePairing("easyTier")}
+            >
+              <LaptopIcon />
+              {easyTierPairingTitle}
+            </Button>
+            <Button
+              size="xs"
+              disabled={pairingDenial !== undefined}
+              onClick={() => openDevicePairing("public")}
+            >
+              <SmartphoneIcon />
+              {phonePairingTitle}
+            </Button>
+          </div>
+        </ManagedControl>
+      ) : pairingDenial !== undefined ? (
+        <ManagedControl reason={pairingDenial}>
+          <Button size="xs" disabled>
             <PlusIcon className="size-3" />
             <T>Create link</T>
           </Button>
@@ -701,10 +783,10 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
         open={dialogOpen && pairingDenial === undefined}
         onOpenChange={handlePairingDialogOpenChange}
       >
-        {pairingDenial === undefined ? (
+        {devicePairingAddresses === undefined && pairingDenial === undefined ? (
           <DialogTrigger
             render={
-              <Button size="xs" variant="default">
+              <Button size="xs">
                 <PlusIcon className="size-3" />
                 <T>Create link</T>
               </Button>
@@ -714,137 +796,253 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
         <DialogPopup className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              <T>Create pairing link</T>
+              {devicePairingAddresses === undefined ? (
+                <T>Create pairing link</T>
+              ) : easyTier ? (
+                easyTierPairingTitle
+              ) : (
+                phonePairingTitle
+              )}
             </DialogTitle>
             <DialogDescription>
-              <T>
-                Generate a one-time link that another device can use to pair with this backend as an
-                authorized client.
-              </T>
+              {devicePairingAddresses === undefined ? (
+                <T>
+                  Generate a one-time link that another device can use to pair with this backend as
+                  an authorized client.
+                </T>
+              ) : devicePairingUrl !== null ? (
+                gt("Scan this QR code or copy the one-time pairing link to the other device.")
+              ) : easyTier ? (
+                gt("Use this environment's address on your EasyTier network.")
+              ) : (
+                gt("Use the public gateway IP or domain that forwards requests to this environment.")
+              )}
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-foreground">
-                <T>Client label (optional)</T>
-              </span>
-              <Input
-                value={pairingLabel}
-                onChange={(event) => setPairingLabel(event.target.value)}
-                placeholder={gt("e.g. Living room iPad")}
-                disabled={isCreatingPairingLink}
-                autoFocus
-              />
-            </label>
-            <section className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-xs font-medium text-foreground">
-                    <T>Permissions</T>
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    <T>Limit what the paired client can do.</T>
-                  </p>
+          {devicePairingUrl !== null ? (
+            <>
+              <DialogPanel>
+                <div className="flex justify-center">
+                  <div className="rounded-xl bg-white p-3">
+                    <QRCodeSvg
+                      value={devicePairingUrl}
+                      size={168}
+                      level="M"
+                      marginSize={1}
+                      title={gt("Pairing link. Scan to open on another device")}
+                    />
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={isCreatingPairingLink}
-                    onClick={() =>
-                      setPairingScopes(
-                        [
-                          AuthOrchestrationReadScope,
-                          AuthFilesystemReadScope,
-                          AuthDiagnosticsReadScope,
-                          AuthTerminalReadScope,
-                        ].filter((scope) => delegatableScopes.includes(scope)),
-                      )
-                    }
-                  >
-                    <T>Read only</T>
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={isCreatingPairingLink}
-                    onClick={() =>
-                      setPairingScopes(
-                        AuthStandardClientScopes.filter((scope) =>
-                          delegatableScopes.includes(scope),
-                        ),
-                      )
-                    }
-                  >
-                    {gt("Standard", { $context: "standard permission preset" })}
-                  </Button>
-                </div>
-              </div>
-              <div className="divide-y divide-border/60 rounded-lg border border-input bg-muted/25">
-                {PAIRING_SCOPE_OPTIONS.filter(({ scope }) => delegatableScopes.includes(scope)).map(
-                  ({ scope, title, description }) => (
+                <Textarea
+                  aria-label={gt("Pairing link")}
+                  readOnly
+                  value={devicePairingUrl}
+                  rows={3}
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </DialogPanel>
+              <DialogFooter variant="bare">
+                <Button variant="outline" onClick={() => handlePairingDialogOpenChange(false)}>
+                  <T>Done</T>
+                </Button>
+                <Button onClick={() => copyDevicePairingUrl(devicePairingUrl)}>
+                  {pairingUrlCopied ? gt("Copied") : gt("Copy link")}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogPanel>
+                {devicePairingAddresses !== undefined ? (
+                  <div>
                     <label
-                      key={scope}
-                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
+                      htmlFor={addressId}
+                      className="mb-1.5 block text-xs font-medium text-foreground"
                     >
-                      <Checkbox
-                        className="mt-0.5"
-                        checked={pairingScopes.includes(scope)}
-                        disabled={isCreatingPairingLink}
-                        onCheckedChange={(checked) => togglePairingScope(scope, checked === true)}
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-xs font-medium text-foreground">
-                          {m(title)}
-                        </span>
-                        <span className="block text-xs leading-snug text-muted-foreground">
-                          {m(description)}
-                        </span>
-                        {terminalSelected && scope === AuthTerminalOperateScope ? (
-                          <span className="block text-xs text-warning">
-                            {gt(
-                              "Terminal commands can read or change files within the server account’s permissions.",
-                            )}
-                          </span>
-                        ) : null}
-                        {relayAdminSelected && scope === AuthRelayConfigureScope ? (
-                          <span className="block text-xs text-warning">
-                            {gt("This client can change who can issue pairing credentials.")}
-                          </span>
-                        ) : null}
-                      </span>
+                      {easyTier ? gt("EasyTier address") : gt("Public gateway address")}
                     </label>
-                  ),
+                    <Input
+                      id={addressId}
+                      value={addressInput}
+                      onChange={(event) => setAddressInput(event.target.value)}
+                      placeholder={easyTier ? "10.0.0.20:3773" : "http://203.0.113.10:3773"}
+                      disabled={isCreatingPairingLink}
+                      aria-invalid={!validAddress}
+                      aria-describedby={validAddress ? undefined : `${addressId}-error`}
+                      autoFocus
+                    />
+                    {!validAddress ? (
+                      <p id={`${addressId}-error`} className="mt-1.5 text-xs text-destructive">
+                        {easyTier
+                          ? gt(
+                              "Enter an EasyTier address using HTTP or HTTPS, with its port if needed.",
+                            )
+                          : gt("Enter a public IP or domain using HTTP or HTTPS.")}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <details
+                  className={devicePairingAddresses === undefined ? "contents" : "space-y-3"}
+                  open={devicePairingAddresses === undefined || undefined}
+                >
+                  <summary
+                    className={
+                      devicePairingAddresses === undefined
+                        ? "hidden"
+                        : "cursor-pointer text-sm text-muted-foreground"
+                    }
+                  >
+                    <T>Client label and permissions</T>
+                  </summary>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-foreground">
+                      <T>Client label (optional)</T>
+                    </span>
+                    <Input
+                      value={pairingLabel}
+                      onChange={(event) => setPairingLabel(event.target.value)}
+                      placeholder={gt("e.g. Living room iPad")}
+                      disabled={isCreatingPairingLink}
+                      autoFocus={devicePairingAddresses === undefined}
+                    />
+                  </label>
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-xs font-medium text-foreground">
+                          <T>Permissions</T>
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          <T>Limit what the paired client can do.</T>
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={isCreatingPairingLink}
+                          onClick={() =>
+                            setPairingScopes(
+                              [
+                                AuthOrchestrationReadScope,
+                                AuthFilesystemReadScope,
+                                AuthDiagnosticsReadScope,
+                                AuthTerminalReadScope,
+                              ].filter((scope) => delegatableScopes.includes(scope)),
+                            )
+                          }
+                        >
+                          <T>Read only</T>
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={isCreatingPairingLink}
+                          onClick={() =>
+                            setPairingScopes(
+                              AuthStandardClientScopes.filter((scope) =>
+                                delegatableScopes.includes(scope),
+                              ),
+                            )
+                          }
+                        >
+                          {gt("Standard", { $context: "standard permission preset" })}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-border/60 rounded-lg border border-input bg-muted/25">
+                      {PAIRING_SCOPE_OPTIONS.filter(({ scope }) =>
+                        delegatableScopes.includes(scope),
+                      ).map(({ scope, title, description }) => (
+                        <label
+                          key={scope}
+                          className="flex cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
+                        >
+                          <Checkbox
+                            className="mt-0.5"
+                            checked={pairingScopes.includes(scope)}
+                            disabled={isCreatingPairingLink}
+                            onCheckedChange={(checked) =>
+                              togglePairingScope(scope, checked === true)
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-xs font-medium text-foreground">
+                              {m(title)}
+                            </span>
+                            <span className="block text-xs leading-snug text-muted-foreground">
+                              {m(description)}
+                            </span>
+                            {terminalSelected && scope === AuthTerminalOperateScope ? (
+                              <span className="block text-xs text-warning">
+                                {gt(
+                                  "Terminal commands can read or change files within the server account’s permissions.",
+                                )}
+                              </span>
+                            ) : null}
+                            {relayAdminSelected && scope === AuthRelayConfigureScope ? (
+                              <span className="block text-xs text-warning">
+                                {gt("This client can change who can issue pairing credentials.")}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    {selectedScopes.length === 0 ? (
+                      <p className="text-xs text-destructive">
+                        <T>Select at least one permission.</T>
+                      </p>
+                    ) : selectedScopes.includes(AuthAccessWriteScope) ? (
+                      <p className="text-xs text-warning">
+                        <T>This client can create or revoke access for other devices.</T>
+                      </p>
+                    ) : null}
+                  </section>
+                </details>
+              </DialogPanel>
+              <DialogFooter variant="bare">
+                {devicePairingAddresses !== undefined ? (
+                  <Button
+                    variant="outline"
+                    disabled={isCreatingPairingLink || !validAddress || !addressChanged}
+                    onClick={() => void saveAddress()}
+                  >
+                    <T>Save address</T>
+                  </Button>
+                ) : (
+                  <Button variant="outline" onClick={() => handlePairingDialogOpenChange(false)}>
+                    <T>Cancel</T>
+                  </Button>
                 )}
-              </div>
-              {selectedScopes.length === 0 ? (
-                <p className="text-xs text-destructive">
-                  <T>Select at least one permission.</T>
-                </p>
-              ) : selectedScopes.includes(AuthAccessWriteScope) ? (
-                <p className="text-xs text-warning">
-                  <T>This client can create or revoke access for other devices.</T>
-                </p>
-              ) : null}
-            </section>
-          </DialogPanel>
-          <DialogFooter variant="bare">
-            <Button
-              variant="outline"
-              disabled={isCreatingPairingLink}
-              onClick={() => setDialogOpen(false)}
-            >
-              <T>Cancel</T>
-            </Button>
-            <Button
-              disabled={isCreatingPairingLink || selectedScopes.length === 0}
-              onClick={() => void handleCreatePairingLink()}
-            >
-              {isCreatingPairingLink ? gt("Creating…") : gt("Create link")}
-            </Button>
-          </DialogFooter>
+                <Button
+                  disabled={
+                    isCreatingPairingLink ||
+                    selectedScopes.length === 0 ||
+                    (devicePairingAddresses !== undefined && address === null)
+                  }
+                  onClick={() => void handleCreatePairingLink()}
+                >
+                  {isCreatingPairingLink
+                    ? gt("Creating…")
+                    : devicePairingAddresses === undefined
+                      ? gt("Create link")
+                      : gt("Generate pairing QR code")}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogPopup>
       </Dialog>
+      <Button
+        size="xs"
+        variant="destructive-outline"
+        disabled={isRevokingOtherClients || !canRevokeOtherClients(clientSessions)}
+        onClick={() => void onRevokeOtherClients()}
+      >
+        {isRevokingOtherClients ? gt("Revoking…") : gt("Revoke others")}
+      </Button>
     </div>
   );
 });
@@ -856,7 +1054,10 @@ type PairingClientsListProps = {
   defaultEndpointKey: string | null;
   isLoading: boolean;
   pairingLinks: ReadonlyArray<ServerPairingLinkRecord>;
-  createdPairingCredentials: ReadonlyMap<string, string>;
+  createdPairingCredentials: ReadonlyMap<
+    string,
+    { readonly credential: string; readonly pairingUrl?: string }
+  >;
   sharedPairingLinkId: string | null;
   clientSessions: ReadonlyArray<ServerClientSessionRecord>;
   revokingPairingLinkId: string | null;
@@ -888,8 +1089,12 @@ export const PairingClientsList = memo(function PairingClientsList({
         <PairingLinkListRow
           key={pairingLink.id}
           pairingLink={pairingLink}
-          credential={createdPairingCredentials.get(pairingLink.id)}
-          defaultShareOpen={pairingLink.id === sharedPairingLinkId}
+          credential={createdPairingCredentials.get(pairingLink.id)?.credential}
+          fixedPairingUrl={createdPairingCredentials.get(pairingLink.id)?.pairingUrl}
+          defaultShareOpen={
+            pairingLink.id === sharedPairingLinkId &&
+            createdPairingCredentials.get(pairingLink.id)?.pairingUrl === undefined
+          }
           servedByEnvironment={servedByEnvironment}
           endpointUrl={endpointUrl}
           endpoints={endpoints}
@@ -925,9 +1130,9 @@ type AdvertisedEndpointListRowProps = {
   endpoint: AdvertisedEndpoint;
   isDefault: boolean;
   onSetDefault: (endpoint: AdvertisedEndpoint) => void;
-  onSetupTailscaleServe: (endpoint: AdvertisedEndpoint) => void;
-  onDisableTailscaleServe: (endpoint: AdvertisedEndpoint) => void;
-  isUpdatingTailscaleServe: boolean;
+  onSetupTailscaleServe?: (endpoint: AdvertisedEndpoint) => void;
+  onDisableTailscaleServe?: (endpoint: AdvertisedEndpoint) => void;
+  isUpdatingTailscaleServe?: boolean;
 };
 
 export const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
@@ -936,13 +1141,18 @@ export const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow
   onSetDefault,
   onSetupTailscaleServe,
   onDisableTailscaleServe,
-  isUpdatingTailscaleServe,
+  isUpdatingTailscaleServe = false,
 }: AdvertisedEndpointListRowProps) {
   const gt = useGT();
   const isAvailable = endpoint.status === "available";
-  const needsTailscaleSetup = isTailscaleHttpsEndpoint(endpoint) && endpoint.status !== "available";
+  const needsTailscaleSetup =
+    Boolean(onSetupTailscaleServe) &&
+    isTailscaleHttpsEndpoint(endpoint) &&
+    endpoint.status !== "available";
   const canDisableTailscaleServe =
-    isTailscaleHttpsEndpoint(endpoint) && endpoint.status === "available";
+    Boolean(onDisableTailscaleServe) &&
+    isTailscaleHttpsEndpoint(endpoint) &&
+    endpoint.status === "available";
   const shouldShowEndpointUrl = !needsTailscaleSetup;
   const m = useMessages();
   const remoteDenial = managedCapabilityDenial(usePrimaryManagedPolicy(), "remoteClients", m);
@@ -980,7 +1190,7 @@ export const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow
               {gt("Default", { $context: "default endpoint badge" })}
             </span>
           ) : null}
-          {needsTailscaleSetup ? (
+          {needsTailscaleSetup && onSetupTailscaleServe ? (
             <ManagedControl reason={remoteDenial}>
               <Button
                 size="xs"
@@ -992,7 +1202,7 @@ export const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow
               </Button>
             </ManagedControl>
           ) : null}
-          {canDisableTailscaleServe ? (
+          {canDisableTailscaleServe && onDisableTailscaleServe ? (
             <Button
               size="xs"
               variant="destructive-outline"

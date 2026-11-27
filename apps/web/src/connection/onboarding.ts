@@ -23,6 +23,20 @@ export const connectPairing = createRuntimeCommand(connectionAtomRuntime, {
     ),
 });
 
+export const connectGatewayOrEasyTier = createRuntimeCommand(connectionAtomRuntime, {
+  label: "web:connection:connect-gateway-or-easytier",
+  scheduler: onboardingScheduler,
+  concurrency: {
+    mode: "singleFlight",
+    key: (input: ConnectionOnboarding.GatewayOrEasyTierConnectionInput) =>
+      JSON.stringify([input.host, input.expectedEnvironmentId ?? null]),
+  },
+  execute: (input: ConnectionOnboarding.GatewayOrEasyTierConnectionInput) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.registerGatewayOrEasyTier(input)),
+    ),
+});
+
 export const connectSshEnvironment = createRuntimeCommand(connectionAtomRuntime, {
   label: "web:connection:connect-ssh",
   scheduler: onboardingScheduler,

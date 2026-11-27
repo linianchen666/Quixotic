@@ -209,6 +209,14 @@ export const make = Effect.gen(function* () {
   const checkRoute = (entry: ConnectionCatalogEntry, route: ConnectionRoute) => {
     const httpBaseUrl = routeHttpBaseUrl(route);
     if (httpBaseUrl === null) return Effect.succeed<RouteCheck>("unchecked");
+    const profile = Option.getOrNull(route.profile);
+    // Gateway proxy routes require gateway auth on /.well-known/t3/environment; let prepare() authenticate them directly.
+    if (
+      (profile?._tag === "BearerConnectionProfile" && profile.network === "gateway") ||
+      httpBaseUrl.includes("/mesh/")
+    ) {
+      return Effect.succeed<RouteCheck>("unchecked");
+    }
     return checkDescriptor(httpBaseUrl, entry.target.environmentId, routeKeepsItsHost(route)).pipe(
       Effect.withSpan("ConnectionDriver.checkRoute", {
         attributes: { "connection.target.kind": route.target._tag },
@@ -217,15 +225,35 @@ export const make = Effect.gen(function* () {
   };
 
   const checkHost = (prepared: PreparedConnection) =>
-    checkDescriptor(
-      prepared.httpBaseUrl,
-      prepared.environmentId,
-      prepared.httpBaseUrl.startsWith("https:"),
-    ).pipe(
-      Effect.withSpan("ConnectionDriver.checkHost", {
-        attributes: { "connection.target.kind": prepared.target._tag },
-      }),
-    );
+    prepared.httpBaseUrl.includes("/mesh/")
+      ? fetchRemoteEnvironmentDescriptor({
+          httpBaseUrl: prepared.httpBaseUrl,
+          ...(prepared.httpAuthorization?._tag === "Bearer"
+            ? { bearerToken: prepared.httpAuthorization.token }
+            : {}),
+          timeoutMs: ROUTE_CHECK_TIMEOUT_MS,
+        }).pipe(
+          Effect.option,
+          Effect.map((descriptor): RouteCheck =>
+            Option.exists(descriptor, (value) => value.environmentId === prepared.environmentId)
+              ? "answered"
+              : "silent",
+          ),
+          Effect.provideService(FetchHttpClient.RequestInit, { cache: "no-store" }),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.withSpan("ConnectionDriver.checkHost", {
+            attributes: { "connection.target.kind": prepared.target._tag },
+          }),
+        )
+      : checkDescriptor(
+          prepared.httpBaseUrl,
+          prepared.environmentId,
+          prepared.httpBaseUrl.startsWith("https:"),
+        ).pipe(
+          Effect.withSpan("ConnectionDriver.checkHost", {
+            attributes: { "connection.target.kind": prepared.target._tag },
+          }),
+        );
 
   const connect = Effect.fn("ConnectionDriver.connect")(function* (
     entry: ConnectionCatalogEntry,

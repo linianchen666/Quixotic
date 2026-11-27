@@ -74,7 +74,7 @@ export class FeedbackStore extends Context.Service<
       input: AgentFeedbackAnswerInput,
     ) => Effect.Effect<void, AgentFeedbackRequestError>;
   }
->()("t3/feedback/FeedbackStore") {}
+>()("quixotic-cli/feedback/FeedbackStore") {}
 
 const storageError = (cause: unknown) => new FeedbackStorageError({ cause });
 const TraceJson = Schema.NullOr(Schema.fromJsonString(FeedbackTrace));

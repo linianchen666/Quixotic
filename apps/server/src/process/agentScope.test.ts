@@ -229,6 +229,7 @@ describe("AgentScope service", () => {
         Effect.gen(function* () {
           const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
           expect(agent.args).toContain("--property=OOMPolicy=stop");
+          expect(agent.args).not.toContain("--property=ManagedOOMPreference=avoid");
           units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
           expect(yield* scope.oomKilled("a")).toBe(true);
 
@@ -241,6 +242,8 @@ describe("AgentScope service", () => {
           expect(NodePath.isAbsolute(anchored)).toBe(true);
           expect(NodePath.resolve(anchored)).toBe(executable);
           expect(codex.args).toContain("--property=OOMPolicy=continue");
+          expect(codex.args).toContain("--property=MemoryAccounting=yes");
+          expect(codex.args).toContain("--property=ManagedOOMPreference=avoid");
           expect(codex.args).not.toContain("--property=OOMPolicy=stop");
           expect(codex.args).toContain("--property=TimeoutStopSec=10s");
           expect(codex.args).toContain("--collect");
@@ -354,7 +357,7 @@ describe("AgentScope service", () => {
             "--user",
             "set-property",
             "--runtime",
-            "app-t3code-agents.slice",
+            "app-quixotic-agents.slice",
             expect.stringMatching(/^MemoryHigh=\d+$/),
             expect.stringMatching(/^MemoryMax=\d+$/),
           ],
@@ -362,7 +365,7 @@ describe("AgentScope service", () => {
             "--user",
             "set-property",
             "--runtime",
-            "app-t3code.slice",
+            "app-quixotic.slice",
             "CPUWeight=10",
             "IOWeight=10",
             "TasksMax=25%",
@@ -381,7 +384,8 @@ describe("AgentScope service", () => {
         const memoryLimits = () =>
           calls
             .filter(
-              ([, verb, , slice]) => verb === "set-property" && slice === "app-t3code-agents.slice",
+              ([, verb, , slice]) =>
+                verb === "set-property" && slice === "app-quixotic-agents.slice",
             )
             .map((args) => args.slice(4));
         yield* launch;
@@ -427,7 +431,7 @@ describe("AgentScope service", () => {
             name: "terminal",
             survivesRestart: true,
           });
-          expect(sliceOf(terminal)).toBe("app-t3code-agents.slice");
+          expect(sliceOf(terminal)).toBe("app-quixotic-agents.slice");
           expect(stopsOf(calls)).toHaveLength(1);
         }),
       { leftovers: true },
@@ -447,9 +451,12 @@ describe("AgentScope service", () => {
         const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
         const unit = unitOf(agent);
         expect(agent.unit).toBe(unit);
+        expect(unit).toMatch(/^quixotic-t-[a-f0-9]{8}\.scope$/);
 
-        yield* scope.stop("session-2.scope");
-        expect(calls.some((args) => args.includes("session-2.scope"))).toBe(false);
+        for (const foreignUnit of ["session-2.scope", "t3code-codex-9d183952.scope"]) {
+          yield* scope.stop(foreignUnit);
+          expect(calls.some((args) => args.includes(foreignUnit))).toBe(false);
+        }
         yield* scope.stop(unit);
         exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: 0 });
         yield* scope.stop(unit);

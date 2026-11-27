@@ -12,12 +12,14 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 
 import {
+  bootstrapEasyTierMeshSession,
   bootstrapRemoteBearerSession,
   exchangeRemoteDpopAccessToken,
 } from "../authorization/remote.ts";
 import {
   deriveWsBaseUrl,
   environmentEndpointUrl,
+  normalizeGatewayOrEasyTierUrl,
   normalizeHttpBaseUrl,
 } from "../environment/endpoint.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
@@ -53,6 +55,12 @@ export interface PairingConnectionInput {
   readonly expectedEnvironmentId?: EnvironmentId;
 }
 
+export interface GatewayOrEasyTierConnectionInput {
+  readonly host: string;
+  readonly password?: string;
+  readonly expectedEnvironmentId?: EnvironmentId;
+}
+
 export interface SshConnectionInput {
   readonly target: DesktopSshEnvironmentTarget;
   readonly label?: string;
@@ -70,6 +78,12 @@ export class ConnectionOnboarding extends Context.Service<
   {
     readonly registerPairing: (
       input: PairingConnectionInput,
+    ) => Effect.Effect<
+      EnvironmentId,
+      ConnectionAttemptError | Persistence.ConnectionPersistenceError
+    >;
+    readonly registerGatewayOrEasyTier: (
+      input: GatewayOrEasyTierConnectionInput,
     ) => Effect.Effect<
       EnvironmentId,
       ConnectionAttemptError | Persistence.ConnectionPersistenceError
@@ -201,6 +215,83 @@ export const preparePairingRegistration = Effect.fn(
       token: access.access_token,
     }),
   });
+});
+
+const registerGatewayOrEasyTierConnection = Effect.fn(
+  "clientRuntime.connection.onboarding.registerGatewayOrEasyTierConnection",
+)(function* (input: GatewayOrEasyTierConnectionInput) {
+  const presentation = yield* ClientCapabilities.ClientPresentation;
+  const httpBaseUrl = yield* Effect.try({
+    try: () => normalizeGatewayOrEasyTierUrl(input.host),
+    catch: (cause) =>
+      new ConnectionBlockedError({
+        reason: "configuration",
+        ...(cause instanceof Error
+          ? detailFromError(cause)
+          : translatableDetail(msg("The server address is invalid."))),
+      }),
+  });
+  const wsBaseUrl = deriveWsBaseUrl(httpBaseUrl);
+  const descriptor = yield* fetchRemoteEnvironmentDescriptor({
+    httpBaseUrl,
+  }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+  if (
+    input.expectedEnvironmentId !== undefined &&
+    descriptor.environmentId !== input.expectedEnvironmentId
+  ) {
+    return yield* differentMachineError(descriptor.label);
+  }
+  const compatibilityError = orchestrationProtocolCompatibilityError(descriptor);
+  if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
+    return yield* compatibilityError;
+  }
+
+  const password = input.password?.trim() ?? "";
+  let accessToken: string;
+  let network: "easytier" | "gateway";
+  if (password.length > 0) {
+    const access = yield* bootstrapRemoteBearerSession({
+      httpBaseUrl,
+      credential: password,
+      clientMetadata: presentation.metadata,
+    }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+    accessToken = access.access_token;
+    network = "gateway";
+  } else {
+    const access = yield* bootstrapEasyTierMeshSession({
+      httpBaseUrl,
+      clientMetadata: presentation.metadata,
+    }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+    accessToken = access.access_token;
+    network = "easytier";
+  }
+
+  const connectionId = bearerConnectionId(descriptor.environmentId, httpBaseUrl);
+  const registration = new BearerConnectionRegistration({
+    target: new BearerConnectionTarget({
+      environmentId: descriptor.environmentId,
+      label: descriptor.label,
+      connectionId,
+    }),
+    profile: new BearerConnectionProfile({
+      connectionId,
+      environmentId: descriptor.environmentId,
+      label: descriptor.label,
+      httpBaseUrl,
+      wsBaseUrl,
+      network,
+    }),
+    credential: new BearerConnectionCredential({ token: accessToken }),
+  });
+  const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+  if (!(yield* registry.register(registration, { knownAddressOnly: false }))) {
+    return registration.target.environmentId;
+  }
+  yield* registry.setCompatibility(registration.target.environmentId, null);
+  yield* registry
+    .setEnabled(registration.target.environmentId, true)
+    .pipe(Effect.catchTags({ EnvironmentNotRegisteredError: () => Effect.void }));
+  return registration.target.environmentId;
 });
 
 const registerPairingConnection = Effect.fn(
@@ -385,6 +476,14 @@ export const make = Effect.gen(function* () {
     registerPairing: Effect.fnUntraced(
       function* (input) {
         return yield* registerPairingConnection(input);
+      },
+      Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
+      Effect.provideService(ClientCapabilities.ClientPresentation, presentation),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    ),
+    registerGatewayOrEasyTier: Effect.fnUntraced(
+      function* (input) {
+        return yield* registerGatewayOrEasyTierConnection(input);
       },
       Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
       Effect.provideService(ClientCapabilities.ClientPresentation, presentation),

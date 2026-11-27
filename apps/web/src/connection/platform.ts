@@ -20,7 +20,11 @@ import {
   sshTargetKey,
   Wakeups,
 } from "@t3tools/client-runtime/connection";
-import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
+import {
+  bootstrapEasyTierMeshSession,
+  bootstrapRemoteBearerSession,
+  fetchEasyTierMeshStatus,
+} from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
@@ -274,7 +278,7 @@ export const provisionDesktopSshEnvironment = Effect.fn(
         reason: "configuration",
         detail: m(
           msg(
-            "{label} runs T3 Code {serverVersion}, but this desktop is {appVersion}, and that server could not accept its pairing. Restart the T3 server on {label} so it runs {appVersion}, then retry.",
+            "{label} runs Quixotic {serverVersion}, but this desktop is {appVersion}, and that server could not accept its pairing. Restart the T3 server on {label} so it runs {appVersion}, then retry.",
             {
               label: descriptor.label,
               serverVersion: descriptor.serverVersion,
@@ -361,7 +365,7 @@ const layerCapabilities = Layer.effectContext(
         if (session === null) {
           return yield* new ConnectionBlockedError({
             reason: "authentication",
-            detail: m(msg("Sign in to T3 Connect to connect this environment.")),
+            detail: m(msg("Sign in to Relay to connect this environment.")),
           });
         }
         const token = yield* session.readClerkToken().pipe(
@@ -376,7 +380,7 @@ const layerCapabilities = Layer.effectContext(
         if (token === null) {
           return yield* new ConnectionBlockedError({
             reason: "authentication",
-            detail: m(msg("The T3 Connect session is unavailable.")),
+            detail: m(msg("The Relay session is unavailable.")),
           });
         }
         return token;
@@ -662,7 +666,44 @@ const layerPlatformConnectionSource = Layer.effect(
     const cacheRef = yield* Ref.make(new Map<string, CachedPlatformRegistration>());
     const rejectedRef = yield* Ref.make(new Map<string, RejectedSecondaryBootstrap>());
 
-    const buildPlatformRegistrations = Effect.gen(function* () {
+  const loadEasyTierDirectPeerRegistration = Effect.fn(
+    "web.connectionPlatform.loadEasyTierDirectPeerRegistration",
+  )(function* (peer: {
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly httpBaseUrl: string;
+    readonly wsBaseUrl: string;
+  }) {
+    const issuedAtEpochMs = yield* Clock.currentTimeMillis;
+    const access = yield* bootstrapEasyTierMeshSession({
+      httpBaseUrl: peer.httpBaseUrl,
+      clientMetadata: currentClientMetadata(),
+      timeoutMs: 5_000,
+    }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+    const connectionId = `easytier:${peer.environmentId}`;
+    return {
+      registration: new BearerConnectionRegistration({
+        target: new BearerConnectionTarget({
+          environmentId: peer.environmentId,
+          label: peer.label,
+          connectionId,
+        }),
+        profile: new BearerConnectionProfile({
+          connectionId,
+          environmentId: peer.environmentId,
+          label: peer.label,
+          httpBaseUrl: peer.httpBaseUrl,
+          wsBaseUrl: peer.wsBaseUrl,
+          network: "easytier",
+        }),
+        credential: new BearerConnectionCredential({ token: access.access_token }),
+      }),
+      expiresAtEpochMs: secondaryBearerExpiresAtEpochMs(issuedAtEpochMs, access.expires_in),
+      refreshAtEpochMs: secondaryBearerRefreshAtEpochMs(issuedAtEpochMs, access.expires_in),
+    };
+  });
+
+  const buildPlatformRegistrations = Effect.gen(function* () {
       const previous = yield* Ref.get(cacheRef);
       const nowEpochMs = yield* Clock.currentTimeMillis;
       const next = new Map<string, CachedPlatformRegistration>();
@@ -804,6 +845,110 @@ const layerPlatformConnectionSource = Layer.effect(
           }
         }
         yield* Ref.set(rejectedRef, nextRejected);
+      }
+
+      // Auto-discover all online EasyTier mesh peers from the primary environment (zero pairing).
+      if (primaryTopologyRead._tag === "Success" && primaryTopologyRead.target !== null) {
+        const primaryHttpBaseUrl = primaryTopologyRead.target.target.httpBaseUrl;
+        const primaryBearerToken = yield* Effect.tryPromise({
+          try: readDesktopPrimaryBearerToken,
+          catch: () => null,
+        }).pipe(Effect.orElseSucceed(() => null));
+        const meshStatus = yield* fetchEasyTierMeshStatus({
+          httpBaseUrl: primaryHttpBaseUrl,
+          ...(primaryBearerToken ? { bearerToken: primaryBearerToken } : {}),
+          timeoutMs: 5_000,
+        }).pipe(
+          Effect.provide(PrimaryEnvironmentHttpLayer.layer),
+          Effect.option,
+        );
+        if (Option.isSome(meshStatus) && meshStatus.value.enabled) {
+          const seenEnvironmentIds = new Set(
+            registrations.map((registration) => registration.target.environmentId),
+          );
+          for (const peer of meshStatus.value.peers) {
+            if (!peer.online || seenEnvironmentIds.has(peer.environmentId)) continue;
+            seenEnvironmentIds.add(peer.environmentId);
+
+            if (
+              meshStatus.value.preferGatewayProxy &&
+              peer.gatewayHttpBaseUrl &&
+              peer.gatewayWsBaseUrl
+            ) {
+              const cacheKey = `easytier-gateway:${peer.environmentId}`;
+              const connectionId = cacheKey;
+              const useCookie = !primaryBearerToken;
+              const signature = `gateway|${peer.gatewayHttpBaseUrl}|${peer.gatewayWsBaseUrl}|${peer.label}|${useCookie ? "cookie" : primaryBearerToken}`;
+              const cached = previous.get(cacheKey);
+              if (
+                cached !== undefined &&
+                canReuseCachedPlatformRegistration(cached, signature, nowEpochMs)
+              ) {
+                next.set(cacheKey, cached);
+                registrations.push(cached.registration);
+                continue;
+              }
+              const registration = new BearerConnectionRegistration({
+                target: new BearerConnectionTarget({
+                  environmentId: peer.environmentId,
+                  label: peer.label,
+                  connectionId,
+                }),
+                profile: new BearerConnectionProfile({
+                  connectionId,
+                  environmentId: peer.environmentId,
+                  label: peer.label,
+                  httpBaseUrl: peer.gatewayHttpBaseUrl,
+                  wsBaseUrl: peer.gatewayWsBaseUrl,
+                  network: "gateway",
+                  ...(useCookie ? { authorization: "cookie" as const } : {}),
+                }),
+                credential: new BearerConnectionCredential({
+                  token: primaryBearerToken ?? "cookie",
+                }),
+              });
+              next.set(cacheKey, { signature, registration });
+              registrations.push(registration);
+              continue;
+            }
+
+            const cacheKey = `easytier:${peer.environmentId}`;
+            const signature = `easytier|${peer.httpBaseUrl}|${peer.wsBaseUrl}|${peer.label}`;
+            const cached = previous.get(cacheKey);
+            if (
+              cached !== undefined &&
+              canReuseCachedPlatformRegistration(cached, signature, nowEpochMs)
+            ) {
+              next.set(cacheKey, cached);
+              registrations.push(cached.registration);
+              continue;
+            }
+            const built = yield* loadEasyTierDirectPeerRegistration(peer).pipe(
+              Effect.tapError((error) =>
+                Effect.logWarning("Could not establish zero-pairing EasyTier session with peer.", {
+                  environmentId: peer.environmentId,
+                  httpBaseUrl: peer.httpBaseUrl,
+                  error,
+                }),
+              ),
+              Effect.option,
+            );
+            if (Option.isSome(built)) {
+              const cacheEntry: CachedPlatformRegistration = {
+                signature,
+                ...built.value,
+              };
+              next.set(cacheKey, cacheEntry);
+              registrations.push(built.value.registration);
+            } else if (
+              cached !== undefined &&
+              canRetainCachedPlatformRegistrationAfterRefreshFailure(cached, signature, nowEpochMs)
+            ) {
+              next.set(cacheKey, cached);
+              registrations.push(cached.registration);
+            }
+          }
+        }
       }
 
       yield* Ref.set(cacheRef, next);

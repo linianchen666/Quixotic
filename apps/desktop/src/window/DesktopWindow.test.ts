@@ -18,6 +18,8 @@ import { vi } from "vite-plus/test";
 
 vi.mock("electron", async (importOriginal) => ({
   ...(await importOriginal<typeof import("electron")>()),
+  Tray: vi.fn(),
+  Menu: { buildFromTemplate: vi.fn() },
   session: {
     fromPartition: vi.fn(() => ({
       getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/1.2.3"),
@@ -117,6 +119,7 @@ function makeFakeBrowserWindow() {
     focus: vi.fn(),
     getBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
     getNormalBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
+    hide: vi.fn(),
     isDestroyed: vi.fn(() => false),
     isFullScreen: vi.fn(() => false),
     isMaximized: vi.fn(() => false),
@@ -124,6 +127,7 @@ function makeFakeBrowserWindow() {
     isVisible: vi.fn(() => true),
     loadURL: vi.fn(() => Promise.resolve()),
     maximize: vi.fn(),
+    minimize: vi.fn(),
     on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
       windowListeners.set(eventName, listener);
     }),
@@ -146,12 +150,14 @@ function makeFakeBrowserWindow() {
     window: window as unknown as Electron.BrowserWindow,
     getBounds: window.getBounds,
     getNormalBounds: window.getNormalBounds,
+    hide: window.hide,
     isDestroyed: window.isDestroyed,
     isFullScreen: window.isFullScreen,
     isMaximized: window.isMaximized,
     isMinimized: window.isMinimized,
     loadURL: window.loadURL,
     maximize: window.maximize,
+    minimize: window.minimize,
     openDevTools: webContents.openDevTools,
     reload: webContents.reload,
     reloadIgnoringCache: webContents.reloadIgnoringCache,
@@ -257,6 +263,7 @@ function layerTest(input: {
   readonly focusedWindow?: Electron.BrowserWindow;
   readonly fallbackWindow?: Electron.BrowserWindow;
   readonly platform?: NodeJS.Platform;
+  readonly iconPaths?: DesktopAssets.DesktopIconPaths;
   readonly appearanceWindows?: ReadonlyArray<{
     readonly window: Electron.BrowserWindow;
     readonly titleBarOverlay: boolean;
@@ -335,7 +342,12 @@ function layerTest(input: {
   return DesktopWindow.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        layerDesktopAssets,
+        input.iconPaths === undefined
+          ? layerDesktopAssets
+          : Layer.succeed(DesktopAssets.DesktopAssets, {
+              iconPaths: Effect.succeed(input.iconPaths),
+              resolveResourcePath: () => Effect.succeedNone,
+            }),
         Layer.succeed(DesktopRendererHistory.DesktopRendererHistory, {
           register: () => Effect.void,
           recordMetrics: () => Effect.void,
@@ -361,6 +373,7 @@ function layerTest(input: {
               input.openedExternalUrls?.push(url);
               return true;
             }),
+          openPath: () => Effect.succeed(true),
           openSystemSettings: () => Effect.succeed(true),
           copyText: input.onCopyText ?? (() => Effect.void),
         } satisfies ElectronShell.ElectronShell["Service"]),
@@ -475,6 +488,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           layerElectronMenu,
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
+            openPath: () => Effect.succeed(true),
             openSystemSettings: () => Effect.succeed(true),
             copyText: () => Effect.void,
           } satisfies ElectronShell.ElectronShell["Service"]),
@@ -503,6 +517,84 @@ const captureOne = DesktopSnapShotId.make("11111111-1111-4111-8111-111111111111"
 const captureTwo = DesktopSnapShotId.make("22222222-2222-4222-8222-222222222222");
 
 describe("DesktopWindow", () => {
+  it.effect.each(["win32", "linux"] as const)(
+    "hides the main window to a reusable tray on %s and allows a real quit",
+    (platform) =>
+      Effect.gen(function* () {
+        const fake = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const initialReveal = yield* Deferred.make<void>();
+        const revealed = yield* Deferred.make<Electron.BrowserWindow>();
+        const tray = {
+          destroy: vi.fn(),
+          isDestroyed: vi.fn(() => false),
+          on: vi.fn<(name: string, handler: () => void) => void>(),
+          setContextMenu: vi.fn(),
+          setToolTip: vi.fn(),
+        };
+        const trayConstructor = vi.mocked(Electron.Tray).mockImplementationOnce(function () {
+          return tray as unknown as Electron.Tray;
+        });
+        const buildMenu = vi.mocked(Electron.Menu.buildFromTemplate);
+        const iconPaths = {
+          ico: Option.some("tray.ico"),
+          icns: Option.none<string>(),
+          png: Option.some("tray.png"),
+        };
+
+        yield* Effect.gen(function* () {
+          const windows = yield* DesktopWindow.DesktopWindow;
+          const state = yield* DesktopState.DesktopState;
+          yield* windows.ensureMain;
+          fake.windowListeners.get("ready-to-show")?.();
+          yield* Deferred.await(initialReveal);
+          const close = fake.windowListeners.get("close")!;
+          const preventDefault = vi.fn();
+          close({ preventDefault });
+          close({ preventDefault });
+
+          assert.equal(preventDefault.mock.calls.length, 2);
+          assert.equal(fake.hide.mock.calls.length, 2);
+          assert.equal(fake.minimize.mock.calls.length, 0);
+          assert.equal(
+            trayConstructor.mock.lastCall?.[0],
+            platform === "win32" ? "tray.ico" : "tray.png",
+          );
+          assert.equal(tray.setContextMenu.mock.calls.length, 1);
+          assert.equal(buildMenu.mock.lastCall?.[0][1]?.role, "quit");
+
+          const activateTray = tray.on.mock.calls.find(([name]) => name === "click")?.[1];
+          assert.isDefined(activateTray);
+          activateTray!();
+          assert.strictEqual(yield* Deferred.await(revealed), fake.window);
+          assert.equal(yield* Ref.get(createCount), 1);
+
+          yield* Ref.set(state.quitting, true);
+          close({ preventDefault });
+          assert.equal(preventDefault.mock.calls.length, 2);
+        }).pipe(
+          Effect.provide(
+            layerTest({
+              window: fake.window,
+              createCount,
+              mainWindow,
+              iconPaths,
+              platform,
+              onReveal: (window) => {
+                if (fake.hide.mock.calls.length > 0) {
+                  Deferred.doneUnsafe(revealed, Effect.succeed(window));
+                } else {
+                  Deferred.doneUnsafe(initialReveal, Effect.void);
+                }
+              },
+            }),
+          ),
+        );
+        assert.equal(tray.destroy.mock.calls.length, 1);
+      }),
+  );
+
   it("restores bounds only when the window fits within a connected display", () => {
     const persistedBounds = { x: 2040, y: 80, width: 1320, height: 880 };
     const displays = [

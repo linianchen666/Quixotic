@@ -8,9 +8,11 @@ permissions:
   contents: read
 
 jobs:
+  # These jobs use upstream release or hosted-service credentials.
   ios:
     name: EAS Preview (iOS)
     if: |
+      github.repository == 'pingdotgg/t3code' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(github.event.pull_request.labels.*.name, '🚀 Mobile Continuous Deployment') &&
       (github.event.action != 'labeled' || github.event.label.name == '🚀 Mobile Continuous Deployment')
@@ -132,6 +134,7 @@ jobs:
   android:
     name: EAS Preview (Android)
     if: |
+      github.repository == 'pingdotgg/t3code' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(github.event.pull_request.labels.*.name, '🚀 Mobile Continuous Deployment') &&
       (github.event.action != 'labeled' || github.event.label.name == '🚀 Mobile Continuous Deployment')
@@ -253,7 +256,7 @@ jobs:
   android-build:
     name: Android preview client
     needs: android
-    if: needs.android.outputs.build == 'true'
+    if: github.repository == 'pingdotgg/t3code' && (needs.android.outputs.build == 'true')
     concurrency:
       # One build per fingerprint; a second PR with the same one finds the tag.
       group: mobile-android-preview-build-${{ needs.android.outputs.fingerprint }}
@@ -271,7 +274,7 @@ jobs:
   ios-build:
     name: iOS preview client
     needs: ios
-    if: needs.ios.outputs.build == 'true'
+    if: github.repository == 'pingdotgg/t3code' && (needs.ios.outputs.build == 'true')
     concurrency:
       # One build per fingerprint; a second PR with the same one finds the tag.
       group: mobile-ios-preview-build-${{ needs.ios.outputs.fingerprint }}
@@ -289,7 +292,7 @@ jobs:
   comment:
     name: Mobile preview comment
     needs: [android, ios, android-build, ios-build]
-    if: always() && !cancelled() && (needs.android.result == 'success' || needs.ios.result == 'success')
+    if: github.repository == 'pingdotgg/t3code' && (always() && !cancelled() && (needs.android.result == 'success' || needs.ios.result == 'success'))
     runs-on: blacksmith-2vcpu-ubuntu-2404
     concurrency:
       group: mobile-preview-comment-${{ github.event.pull_request.number }}

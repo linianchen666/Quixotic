@@ -61,7 +61,6 @@ import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { m as resolveMessage } from "../../i18n/messages";
 import { useNowMinute } from "../../hooks/useNowMinute";
-import { useSearchableSetting } from "./settingsSearch";
 
 // Console log labels for the atom commands.
 const UNLINK_COMMAND_LABEL = "unlink environment";
@@ -79,7 +78,6 @@ export function LinkedEnvironmentsSettings({
   readonly environmentLabel: string | null;
   readonly isSearchTarget: boolean;
 }) {
-  const searchableSetting = useSearchableSetting();
   const gt = useGT();
   const links = useEnvironmentQuery(
     peerLinkEnvironment.list({ environmentId, input: {} }),
@@ -99,7 +97,7 @@ export function LinkedEnvironmentsSettings({
     },
   );
   const canLink = useAtomValue(peerLinkEnvironment.link.permissionAtom(environmentId));
-  const search = searchableSetting("linked-environments");
+  const search = { id: "linked-environments", title: gt("Linked environments") };
   // A batch needs at least two other machines this app has saved.
   const otherMachines = useEnvironments().environments.length - 1;
   return (
@@ -125,7 +123,7 @@ export function LinkedEnvironmentsSettings({
         <SettingsRow
           title={gt("No linked environments")}
           description={gt(
-            "Link another machine running T3 Code, such as a VPS, so agents here can launch and drive threads there.",
+            "Link another machine running Quixotic, such as a VPS, so agents here can launch and drive threads there.",
           )}
         />
       ) : (
@@ -686,7 +684,7 @@ export function useForgetPeerLink(environmentId: EnvironmentId, link: PeerLinkSu
           type: "warning",
           title: gt("{label} did not answer", { label: link.label }),
           description: gt(
-            "Revoke \"T3 Code · …\" in {label}''s Sharing & access to end the session there too.",
+            "Revoke \"Quixotic · …\" in {label}''s Sharing & access to end the session there too.",
             { label: link.label },
           ),
         });

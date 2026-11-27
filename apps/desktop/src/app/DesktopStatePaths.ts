@@ -13,14 +13,11 @@ function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Optio
 export const desktopStateDatabase = (baseDir: string, joinPath: JoinPath) =>
   joinPath(baseDir, "userdata", "statev2.sqlite");
 
-export function resolveDesktopBaseDir(input: {
+export function resolveDefaultDesktopBaseDir(input: {
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
-  readonly t3Home: Option.Option<string>;
   readonly hasState?: (path: string) => boolean;
 }): string {
-  const configured = normalizeConfiguredBaseDir(input.t3Home);
-  if (Option.isSome(configured)) return configured.value;
   const current = input.joinPath(input.homeDirectory, ".quixotic");
   const legacy = input.joinPath(input.homeDirectory, ".t3");
   return input.hasState &&
@@ -28,6 +25,22 @@ export function resolveDesktopBaseDir(input: {
     input.hasState(desktopStateDatabase(legacy, input.joinPath))
     ? legacy
     : current;
+}
+
+export function resolveDesktopBaseDir(input: {
+  readonly homeDirectory: string;
+  readonly joinPath: JoinPath;
+  readonly t3Home: Option.Option<string>;
+  readonly configuredBaseDir?: Option.Option<string>;
+  readonly hasState?: (path: string) => boolean;
+}): string {
+  const envConfigured = normalizeConfiguredBaseDir(input.t3Home);
+  if (Option.isSome(envConfigured)) return envConfigured.value;
+  if (input.configuredBaseDir) {
+    const pointerConfigured = normalizeConfiguredBaseDir(input.configuredBaseDir);
+    if (Option.isSome(pointerConfigured)) return pointerConfigured.value;
+  }
+  return resolveDefaultDesktopBaseDir(input);
 }
 
 export function resolveDesktopStateDir(input: {

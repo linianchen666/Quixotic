@@ -22,6 +22,12 @@ Exit T3 Code before upgrading. On Windows, run the matching Quixotic NSIS instal
 
 Quixotic opens your existing desktop data in place. If both desktop databases already exist, it opens Quixotic's database. An explicit `T3CODE_HOME` takes priority.
 
+## Install
+
+Check [Quixotic Releases](https://github.com/linianchen666/Quixotic/releases)
+for desktop builds. The [installation guide](./docs/user/install.md) covers
+building the desktop app, `quixotic-cli`, and mobile client from source.
+
 ## Local Development
 
 ```bash

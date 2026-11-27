@@ -56,8 +56,7 @@ function alertOnFailure(failureTitle: string, result: AtomCommandResult<unknown,
 }
 
 /**
- * Owner controls for a guest link, above the composer: who the link is for and a way to stop
- * sharing. Links are created from the thread's menu, see `ThreadGuestShareSheet`. Waiting
+ * Owner controls for a previously shared thread, including a way to stop sharing. Waiting
  * messages show in the feed, see `ThreadGuestPendingMessage`.
  */
 export function ThreadGuestShareBar(props: {

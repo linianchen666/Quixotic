@@ -111,8 +111,15 @@ export class ServerConfig extends Context.Service<
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
+    readonly easyTierEnabled?: boolean | undefined;
+    readonly easyTierCidr?: string | undefined;
+    readonly easyTierPeers?: ReadonlyArray<string> | undefined;
+    readonly easyTierPorts?: ReadonlyArray<number> | undefined;
+    readonly gatewayMode?: boolean | undefined;
+    readonly gatewayPassword?: Redacted.Redacted<string> | undefined;
+    readonly publicGatewayUrl?: string | undefined;
   }
->()("t3/config/ServerConfig") {
+>()("quixotic-cli/config/ServerConfig") {
   static readonly layerTest = (
     cwd: string,
     baseDirOrPrefix: string | { readonly prefix: string },
@@ -257,6 +264,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,
     tailscaleServePort: 443,
+    easyTierEnabled: false,
     port: 0,
     host: undefined,
     desktopBootstrapToken: undefined,

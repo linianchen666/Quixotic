@@ -88,28 +88,43 @@ export function PairingRouteSurface({
     autoSubmit(autoPairToken);
   }, [autoPairToken]);
 
+  const isGatewayPasswordAuth = auth.gatewayPasswordEnabled === true;
+
   return (
     <StandalonePage>
       <StandalonePageHeader
-        title={gt("Pair with this environment")}
-        description={describeAuthGate(auth.bootstrapMethods, messages)}
+        title={
+          isGatewayPasswordAuth
+            ? gt("Sign in to Public Gateway")
+            : gt("Pair with this environment")
+        }
+        description={
+          isGatewayPasswordAuth
+            ? gt("Enter your gateway access password to control all EasyTier machines from this browser.")
+            : describeAuthGate(auth.bootstrapMethods, messages)
+        }
       />
 
       <form className="mt-6 space-y-4" onSubmit={(event) => void handleSubmit(event)}>
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="pairing-token">
-            <T>Pairing token</T>
+            {isGatewayPasswordAuth ? <T>Gateway access password</T> : <T>Pairing token</T>}
           </label>
           <Input
             id="pairing-token"
             autoCapitalize="none"
-            autoComplete="off"
+            autoComplete={isGatewayPasswordAuth ? "current-password" : "off"}
             autoCorrect="off"
             disabled={isSubmitting}
             nativeInput
             onChange={(event) => setCredential(event.currentTarget.value)}
-            placeholder={gt("Paste a one-time token or pairing secret")}
+            placeholder={
+              isGatewayPasswordAuth
+                ? gt("Enter gateway access password")
+                : gt("Paste a one-time token or pairing secret")
+            }
             spellCheck={false}
+            type={isGatewayPasswordAuth ? "password" : "text"}
             value={credential}
           />
         </div>
@@ -122,7 +137,11 @@ export function PairingRouteSurface({
 
         <div className="flex flex-wrap gap-2">
           <Button disabled={isSubmitting} size="sm" type="submit">
-            {isSubmitting ? gt("Pairing...") : gt("Continue")}
+            {isSubmitting
+              ? isGatewayPasswordAuth
+                ? gt("Signing in...")
+                : gt("Pairing...")
+              : gt("Continue")}
           </Button>
           <Button
             disabled={isSubmitting}
@@ -136,7 +155,11 @@ export function PairingRouteSurface({
       </form>
 
       <div className="mt-6 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-        {describeSupportedMethods(auth.bootstrapMethods, messages)}
+        {isGatewayPasswordAuth
+          ? gt(
+              "Once signed in, all online Quixotic nodes in your EasyTier mesh will appear automatically without per-machine pairing.",
+            )
+          : describeSupportedMethods(auth.bootstrapMethods, messages)}
       </div>
     </StandalonePage>
   );

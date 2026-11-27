@@ -583,6 +583,14 @@ describe("settings mutation authorization", () => {
             patch: { requireConnectDeviceApproval: false },
           }).pipe(Effect.flip),
         ).toMatchObject({ requiredPermission: AuthAccessWriteScope });
+        for (const patch of [
+          { easyTierPairingAddress: "http://10.126.126.20:3773" },
+          { publicPairingAddress: "https://linux.example.com" },
+        ]) {
+          expect(
+            yield* client[WS_METHODS.serverUpdateSettings]({ patch }).pipe(Effect.flip),
+          ).toMatchObject({ requiredPermission: AuthAccessWriteScope });
+        }
         // A reference names any secret the store holds, and the host entry names where it goes.
         expect(
           yield* client[WS_METHODS.serverUpdateSettings]({

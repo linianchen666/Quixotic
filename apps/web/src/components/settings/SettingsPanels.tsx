@@ -53,7 +53,7 @@ import {
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
-import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
+import { buildHostedChannelSelectionUrl, hostedAppChannelRouter, type HostedAppChannel } from "../../hostedPairing";
 import {
   readAppearanceModePreference,
   readThemeHalves,
@@ -123,6 +123,7 @@ import { SUPPORTED_LOCALES } from "../../i18n/locales";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
+import { DataDirectorySettingsSection } from "./DataDirectorySettingsSection";
 import { StorageCleanupSections } from "./StorageSettings";
 import { UpdateTrackSwitchDialog } from "./UpdateTrackSwitchDialog";
 import { environmentIdsKey } from "~/state/environmentAtomList";
@@ -197,6 +198,7 @@ function AboutVersionSection() {
     hasDesktopBridge && primaryPolicy?.limits?.updates?.allowNightly === false
       ? primaryPolicy.organization
       : undefined;
+  const channelRouter = hostedAppChannelRouter();
   const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
   // A switch that failed part way leaves this app or a server on the other track.
   // With its updater off, a switch cannot move this app, so it is not counted.
@@ -440,7 +442,7 @@ function AboutVersionSection() {
             </Select>
           }
         />
-      ) : selectedHostedAppChannel ? (
+      ) : selectedHostedAppChannel && channelRouter ? (
         <SettingsRow
           {...setting("update-track")}
           description={gt("Switches the hosted app release channel.")}
@@ -450,7 +452,7 @@ function AboutVersionSection() {
               onValueChange={(value) => {
                 if (value === selectedHostedAppChannel) return;
                 window.location.assign(
-                  buildHostedChannelSelectionUrl({ channel: value as HostedAppChannel }),
+                  buildHostedChannelSelectionUrl({ channel: value as HostedAppChannel, router: channelRouter }),
                 );
               }}
             >
@@ -959,7 +961,7 @@ export function GeneralSettingsPanel() {
           description={
             <T>
               Fold working and monitoring threads into a Working section. They return to the top of
-              the inbox when they need you. The boring sidebar in Labs has no Working section.
+              the inbox when they need you.
             </T>
           }
           resetAction={
@@ -2495,6 +2497,8 @@ export function MaintenanceSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <DataDirectorySettingsSection />
 
       <StorageCleanupSections />
 

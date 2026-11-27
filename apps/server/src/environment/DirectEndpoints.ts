@@ -1,30 +1,22 @@
 import type { ServerDirectEndpoint } from "@t3tools/contracts";
-import {
-  buildTailscaleHttpsBaseUrl,
-  probeTailscaleHttpsEndpoint,
-  readTailscaleStatus,
-} from "@t3tools/tailscale";
 import * as Context from "effect/Context";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
-import { HttpClient } from "effect/http";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   formatHostForUrl,
-  isTailnetHost,
+  isBenchmarkOrProxyTunIpv4,
+  isEasyTierInterfaceName,
+  isRfc1918Ipv4,
+  isSharedAddressSpaceHost,
   isWildcardHost,
 } from "@t3tools/shared/hostClassification";
 
 import * as ServerConfig from "../config.ts";
-import * as ServerEnvironment from "./ServerEnvironment.ts";
 import {
   isLoopbackHost,
   isPrivateNetworkAddress,
@@ -34,43 +26,45 @@ import {
 
 type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
 
-// Stay below the config discovery timeout so slow Tailscale drops only the tailnet name.
-const TAILSCALE_ENDPOINT_TIMEOUT = Duration.seconds(3);
-
 export class DirectEndpoints extends Context.Service<
   DirectEndpoints,
   {
     readonly resolveAvailable: () => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
     readonly resolve: () => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
   }
->()("t3/environment/DirectEndpoints") {}
+>()("quixotic-cli/environment/DirectEndpoints") {}
 
-// Credentials travel over HTTP; public IPs leak them and hostnames can resolve differently per client.
-// Wildcard binds stay IPv4: the private-network listener check accepts only IPv4 peers.
+// Exclude loopback, link-local, Clash/Mihomo fake-IP TUN (198.18.0.0/15), and legacy Tailscale/CGNAT (100.64.0.0/10).
 const isAdvertisableAddress = (address: string): boolean =>
-  NodeNet.isIPv4(address) && !address.startsWith("127.") && isPrivateNetworkAddress(address);
-
-// macOS utun names need Tailscale's IPv6 range to identify them; WARP shares its IPv4 range.
-const isTailscaleInterface = (
-  name: string,
-  entries: ReadonlyArray<NodeOS.NetworkInterfaceInfo>,
-): boolean =>
-  /^tailscale/i.test(name) ||
-  entries.some((entry) => entry.family === "IPv6" && isTailnetHost(entry.address));
+  NodeNet.isIPv4(address) &&
+  !address.startsWith("127.") &&
+  !isBenchmarkOrProxyTunIpv4(address) &&
+  !isSharedAddressSpaceHost(address) &&
+  isPrivateNetworkAddress(address);
 
 export function resolveBoundEndpoints(input: {
   readonly platform: NodeJS.Platform;
   readonly host: string | undefined;
   readonly port: number;
   readonly interfaces: NetworkInterfacesMap;
-  /** A cloud VM's private network is its provider's, which no client shares. */
+  /** A cloud VM's private network is its provider's, which no client shares — keep EasyTier only. */
   readonly onCloudVm?: boolean;
   readonly isolatedBridges?: ReadonlySet<string>;
 }): ReadonlyArray<ServerDirectEndpoint> {
   if (isLoopbackHost(input.host)) return [];
-  const tailscaleAddresses = new Set(
+  const easyTierAddresses = new Set(
     Object.entries(input.interfaces).flatMap(([name, entries = []]) =>
-      isTailscaleInterface(name, entries) ? entries.map((entry) => entry.address) : [],
+      isEasyTierInterfaceName(name)
+        ? entries
+            .filter(
+              (entry) =>
+                !entry.internal &&
+                entry.family === "IPv4" &&
+                isRfc1918Ipv4(entry.address) &&
+                !isBenchmarkOrProxyTunIpv4(entry.address),
+            )
+            .map((entry) => entry.address)
+        : [],
     ),
   );
   const addresses = isWildcardHost(input.host)
@@ -88,16 +82,21 @@ export function resolveBoundEndpoints(input: {
             !(input.platform === "win32" && WINDOWS_HOST_ADAPTER_MAC.test(entry.mac)),
         )
         .map((entry) => entry.address)
-    : [input.host!].filter(
-        (address) =>
-          isAdvertisableAddress(address) || (NodeNet.isIPv6(address) && isTailnetHost(address)),
-      );
-  return [...new Set(addresses)]
-    .filter((address) => !input.onCloudVm || tailscaleAddresses.has(address))
-    .map((address) => ({
-      kind: tailscaleAddresses.has(address) ? "tailnet" : "lan",
-      httpBaseUrl: `http://${formatHostForUrl(address)}:${input.port}/`,
-    }));
+    : [input.host!].filter((address) => isAdvertisableAddress(address));
+
+  // Prioritize EasyTier mesh endpoints first so clients always prefer EasyTier over raw LAN.
+  const unique = [...new Set(addresses)]
+    .filter((address) => !input.onCloudVm || easyTierAddresses.has(address))
+    .toSorted((left, right) => {
+      const leftEt = easyTierAddresses.has(left) ? 0 : 1;
+      const rightEt = easyTierAddresses.has(right) ? 0 : 1;
+      return leftEt - rightEt;
+    });
+
+  return unique.map((address) => ({
+    kind: easyTierAddresses.has(address) ? "easytier" : "lan",
+    httpBaseUrl: `http://${formatHostForUrl(address)}:${input.port}/`,
+  }));
 }
 
 const SYSFS_NET = "/sys/class/net";
@@ -171,11 +170,8 @@ const probeCloudMetadata = Effect.callback<boolean>((resume) => {
 /** @public */
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const httpClient = yield* HttpClient.HttpClient;
   const platform = yield* HostProcess.Platform;
   const fileSystem = yield* FileSystem.FileSystem;
-  const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
   // Only the service default listens on every interface without being asked,
   // so only it checks once whether it runs in a cloud. The check starts now so
   // the first client does not wait for its timeout.
@@ -184,7 +180,6 @@ export const make = Effect.gen(function* () {
     : Effect.succeed(false);
   yield* Effect.forkDetach(onCloudVm);
 
-  const servedEndpoint = yield* Ref.make<Option.Option<string>>(Option.none());
   const resolveAvailable = Effect.fn("DirectEndpoints.resolveAvailable")(function* () {
     const interfaces = NodeOS.networkInterfaces();
     const isolatedBridges =
@@ -193,7 +188,7 @@ export const make = Effect.gen(function* () {
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           )
         : undefined;
-    const endpoints = [
+    return [
       ...resolveBoundEndpoints({
         platform,
         host: config.host,
@@ -203,42 +198,11 @@ export const make = Effect.gen(function* () {
         ...(isolatedBridges === undefined ? {} : { isolatedBridges }),
       }),
     ];
-    const servedUrl = yield* Ref.get(servedEndpoint);
-    if (Option.isSome(servedUrl)) endpoints.push({ kind: "tailnet", httpBaseUrl: servedUrl.value });
-    return endpoints;
-  });
-
-  const resolve = Effect.gen(function* () {
-    // Serve setup can fail without stopping startup; advertise only after it answers as this server.
-    if (config.tailscaleServeEnabled) {
-      const servedUrl = yield* readTailscaleStatus.pipe(
-        Effect.map((status) => status.magicDnsName),
-        Effect.flatMap((magicDnsName) => {
-          if (magicDnsName === null) return Effect.succeed(null);
-          const httpBaseUrl = buildTailscaleHttpsBaseUrl({
-            magicDnsName,
-            servePort: config.tailscaleServePort,
-          });
-          return probeTailscaleHttpsEndpoint({ baseUrl: httpBaseUrl, environmentId }).pipe(
-            Effect.map((reachable) => (reachable ? httpBaseUrl : null)),
-          );
-        }),
-        Effect.timeoutOption(TAILSCALE_ENDPOINT_TIMEOUT),
-        Effect.map(Option.flatMap(Option.fromNullishOr)),
-        Effect.orElseSucceed(() => Option.none<string>()),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(HttpClient.HttpClient, httpClient),
-      );
-      yield* Ref.set(servedEndpoint, servedUrl);
-    }
-    return yield* resolveAvailable();
   });
 
   return DirectEndpoints.of({
     resolveAvailable,
-    resolve: Effect.fn("DirectEndpoints.resolve")(function () {
-      return resolve;
-    }),
+    resolve: resolveAvailable,
   });
 });
 

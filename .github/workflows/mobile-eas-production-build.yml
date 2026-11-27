@@ -33,11 +33,12 @@ permissions:
   contents: read
 
 jobs:
+  # These jobs use upstream release or hosted-service credentials.
   # ARM-only, without release lint (see the production profile in eas.json),
   # with Gradle, ccache, and pnpm state on a sticky disk.
   android:
     name: Build
-    if: ${{ !cancelled() && inputs.platform == 'android' }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && inputs.platform == 'android') }}
     runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
     permissions:
@@ -110,7 +111,7 @@ jobs:
   # No sticky disk: it mounts ext4 and only works on Linux runners.
   ios:
     name: Build
-    if: ${{ !cancelled() && inputs.platform == 'ios' }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && inputs.platform == 'ios') }}
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
@@ -166,7 +167,7 @@ jobs:
   record:
     name: Record build
     needs: [android, ios]
-    if: ${{ !cancelled() && (needs.android.outputs.submitted == 'true' || needs.ios.outputs.submitted == 'true') }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && (needs.android.outputs.submitted == 'true' || needs.ios.outputs.submitted == 'true')) }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:

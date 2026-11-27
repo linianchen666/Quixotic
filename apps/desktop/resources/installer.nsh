@@ -5,7 +5,18 @@
 !else
   ${StrRep}
   !define T3StrRep '${StrRep}'
+  Var PreviousInstallDir
 !endif
+
+!macro customInit
+  !ifndef BUILD_UNINSTALLER
+    StrCpy $PreviousInstallDir ""
+    ReadRegStr $PreviousInstallDir HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+    ${If} $PreviousInstallDir == ""
+      ReadRegStr $PreviousInstallDir HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+    ${EndIf}
+  !endif
+!macroend
 
 !macro customAppRunningMessages
   Push $0
@@ -37,6 +48,16 @@
       CreateShortCut "$newStartMenuLink" "$appExe" "" "$appExe" 0 "" "" "${APP_DESCRIPTION}"
       ClearErrors
       WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
+    ${EndIf}
+  !endif
+  !ifndef BUILD_UNINSTALLER
+    ${If} $PreviousInstallDir != ""
+    ${AndIf} $PreviousInstallDir != $INSTDIR
+      ; When relocating an existing install (for example from C: to D:), remove
+      ; any leftover uninstaller stub and empty directory at the previous location.
+      ; User data under %USERPROFILE%\.t3 / .quixotic and %APPDATA% is never touched.
+      Delete /REBOOTOK "$PreviousInstallDir\Uninstall *.exe"
+      RMDir "$PreviousInstallDir"
     ${EndIf}
   !endif
 !macroend

@@ -29,7 +29,7 @@ export function SettingsLegalDocumentRouteScreen({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [externalUrl, setExternalUrl] = useState(documentUrl);
   const navigation = useNavigation();
-  const safeExternalUrl = isLegalDocumentUrl(externalUrl) ? externalUrl : LEGAL_URL;
+  const safeExternalUrl = isLegalDocumentUrl(externalUrl) ? externalUrl : (LEGAL_URL ?? documentUrl);
   const headerOptions = (
     <SheetHeader
       title={documentName}

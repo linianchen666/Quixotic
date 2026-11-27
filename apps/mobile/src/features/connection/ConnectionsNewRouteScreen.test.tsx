@@ -95,6 +95,7 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
     connectedEnvironments: [],
     pairingConnectionError: harness.pendingConnectionError,
     onChangeConnectionPairingUrl: vi.fn(),
+    onConnectGatewayOrEasyTier: vi.fn(),
     onConnectPress: harness.connectPress,
     onSetEnvironmentEnabled: vi.fn(),
     onRemoveEnvironmentPress: vi.fn(),
@@ -103,7 +104,7 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
 
 import { ConnectionsNewRouteScreen } from "./ConnectionsNewRouteScreen";
 
-it("does not show another feature's error as a pairing failure", () => {
+it("does not show another feature's error as a connection failure", () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal("__DEV__", false);
   harness.pendingConnectionError = "Could not send the message.";
@@ -112,14 +113,14 @@ it("does not show another feature's error as a pairing failure", () => {
   act(() => root.render(<ConnectionsNewRouteScreen route={{ params: undefined }} />));
 
   expect(container.textContent).not.toContain("Could not send the message.");
-  expect(container.textContent).toContain("For machines on your local network or tailnet.");
+  expect(container.textContent).toContain("Sign in to your Public Gateway once");
 
   act(() => root.unmount());
   // Leaving the form must not wipe an error that belongs to another screen.
   expect(harness.pendingConnectionError).toBe("Could not send the message.");
 });
 
-it("splits a pasted pairing link and preserves the code during address edits", () => {
+it("splits a pasted pairing link and keeps password edits independent from address edits", () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal("__DEV__", false);
   harness.pendingConnectionError = null;
@@ -129,7 +130,7 @@ it("splits a pasted pairing link and preserves the code during address edits", (
   try {
     act(() => root.render(<ConnectionsNewRouteScreen route={{ params: undefined }} />));
     const address = container.querySelector<HTMLInputElement>('input[aria-label="Address"]')!;
-    const code = container.querySelector<HTMLInputElement>('input[aria-label="Code"]')!;
+    const password = container.querySelector<HTMLInputElement>('input[aria-label="Password"]')!;
     const enter = (input: HTMLInputElement, value: string) => {
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -140,16 +141,14 @@ it("splits a pasted pairing link and preserves the code during address edits", (
       });
     };
 
-    enter(code, "manual-code");
-    enter(address, "  http://100.82.53.91:3773/pair#token=test-pairing-code\n");
-    expect(address.value).toBe("http://100.82.53.91:3773");
-    expect(code.value).toBe("test-pairing-code");
+    enter(address, "  http://10.126.126.10:3773/pair#token=test-pairing-code\n");
+    expect(address.value).toBe("http://10.126.126.10:3773");
 
-    enter(code, "replacement-code");
-    for (const value of ["", "100.82.53.92:3773", "http://100.82.53.92:3773/"]) {
+    enter(password, "gateway-secret");
+    for (const value of ["", "203.0.113.10:3773", "http://203.0.113.10:3773/"]) {
       enter(address, value);
       expect(address.value).toBe(value);
-      expect(code.value).toBe("replacement-code");
+      expect(password.value).toBe("gateway-secret");
     }
   } finally {
     act(() => root.unmount());

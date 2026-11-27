@@ -23,17 +23,20 @@ import { environmentCatalog } from "../connection/catalog";
 import { createRemoteEnvironmentProjectionAtoms } from "./remote-environment-projections";
 import { serverEnvironment } from "./server";
 import { relayEnvironmentDiscovery } from "./relay";
-import { connectPairingUrl as connectPairingUrlCommand } from "../connection/onboarding";
+import {
+  connectGatewayOrEasyTier as connectGatewayOrEasyTierCommand,
+  connectPairingUrl as connectPairingUrlCommand,
+} from "../connection/onboarding";
 
 const RELAY_REMOVAL_ACCOUNT_NOTE: Record<Discovery.RelayEnvironmentRegistration, string> = {
   registered: msg(
     "It stays on your {connect} account and keeps its host space. Deregister it under {account} → {connect} to free it.",
-    { connect: "T3 Connect", account: "T3 Account" },
+    { connect: "Self-hosted relay", account: "Relay account" },
   ),
-  unregistered: msg("It's no longer on your {connect} account.", { connect: "T3 Connect" }),
+  unregistered: msg("It's no longer on your {connect} account.", { connect: "Self-hosted relay" }),
   unknown: msg(
     "This doesn't change your {connect} account. To deregister it there, use {account} → {connect}.",
-    { connect: "T3 Connect", account: "T3 Account" },
+    { connect: "Self-hosted relay", account: "Relay account" },
   ),
 };
 
@@ -55,6 +58,33 @@ export interface PairingOutcome {
   readonly ok: boolean;
   /** Shown beside the pairing form; null when the failure got its own dialog. */
   readonly error: string | null;
+}
+
+export async function connectGatewayOrEasyTier(input: {
+  readonly host: string;
+  readonly password?: string;
+  readonly expectedEnvironmentId?: EnvironmentId;
+}): Promise<PairingOutcome> {
+  const result = await runAtomCommand(appAtomRegistry, connectGatewayOrEasyTierCommand, input, {
+    reportFailure: false,
+  });
+  if (AsyncResult.isSuccess(result)) {
+    appAtomRegistry.set(connectionPairingUrlAtom, "");
+    return { ok: true, error: null };
+  }
+  const error = Cause.squash(result.cause);
+  const message =
+    errorDisplayMessage(error, m) ?? m(msg("Failed to connect to the gateway or EasyTier node."));
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "reason" in error &&
+    error.reason === "unsupported"
+  ) {
+    Dialog.alert(m(msg("Client not supported")), message);
+    return { ok: false, error: null };
+  }
+  return { ok: false, error: message };
 }
 
 /** Pairs with the environment behind a pairing link and saves it. */
@@ -174,6 +204,12 @@ export function useRemoteConnections() {
   const onConnectPress = (pairingUrl?: string, expectedEnvironmentId?: EnvironmentId) =>
     pairEnvironment(pairingUrl ?? connectionPairingUrl, expectedEnvironmentId);
 
+  const onConnectGatewayOrEasyTier = (input: {
+    readonly host: string;
+    readonly password?: string;
+    readonly expectedEnvironmentId?: EnvironmentId;
+  }) => connectGatewayOrEasyTier(input);
+
   const onReconnectEnvironment = useRetryEnvironment();
   const onSetEnvironmentEnabled = (environmentId: EnvironmentId, enabled: boolean) =>
     controller.setEnvironmentEnabled(environmentId, enabled);
@@ -202,7 +238,7 @@ export function useRemoteConnections() {
         environmentId,
       );
       const openAccount = {
-        text: m(msg("Open {account}", { account: "T3 Account" })),
+        text: m(msg("Open {account}", { account: "Relay account" })),
         onPress: () => navigation.navigate("SettingsAuth"),
       };
       const cancel = { text: m(msg("Cancel")), style: "cancel" } as const;
@@ -238,6 +274,7 @@ export function useRemoteConnections() {
     connectedEnvironments,
     connectedEnvironmentCount: connectedEnvironments.length,
     onChangeConnectionPairingUrl,
+    onConnectGatewayOrEasyTier,
     onConnectPress,
     onReconnectEnvironment,
     onSetEnvironmentEnabled,

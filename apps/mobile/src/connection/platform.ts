@@ -1,10 +1,25 @@
-import { ClientCapabilities, PlatformConnectionSource } from "@t3tools/client-runtime/platform";
 import {
+  ClientCapabilities,
+  Persistence,
+  PlatformConnectionSource,
+} from "@t3tools/client-runtime/platform";
+import {
+  BearerConnectionCredential,
+  BearerConnectionProfile,
+  BearerConnectionRegistration,
+  BearerConnectionTarget,
   ConnectionBlockedError,
   ConnectionTransientError,
   Connectivity,
+  CredentialStore,
+  type PlatformConnectionRegistration,
+  ProfileStore,
   Wakeups,
 } from "@t3tools/client-runtime/connection";
+import {
+  bootstrapEasyTierMeshSession,
+  fetchEasyTierMeshStatus,
+} from "@t3tools/client-runtime/authorization";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import * as Clock from "effect/Clock";
 import { msg } from "gt-react-native";
@@ -14,7 +29,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient } from "effect/http";
 import Constants from "expo-constants";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
@@ -161,7 +178,7 @@ const layerCapabilities = Layer.effectContext(
             return yield* new ConnectionBlockedError({
               reason: "authentication",
               detail: m(
-                msg("Sign in to {product} to connect this environment.", { product: "T3 Connect" }),
+                msg("Sign in to {product} to connect this environment.", { product: "Self-hosted relay" }),
               ),
             });
           }
@@ -177,7 +194,7 @@ const layerCapabilities = Layer.effectContext(
           if (token === null) {
             return yield* new ConnectionBlockedError({
               reason: "authentication",
-              detail: m(msg("The {product} session is unavailable.", { product: "T3 Connect" })),
+              detail: m(msg("The {product} session is unavailable.", { product: "Self-hosted relay" })),
             });
           }
           return token;
@@ -251,15 +268,172 @@ const layerCapabilities = Layer.effectContext(
   }),
 );
 
-const layerPlatformConnectionSource = Layer.succeed(
-  PlatformConnectionSource.PlatformConnectionSource,
-  PlatformConnectionSource.PlatformConnectionSource.of({
-    registrations: Stream.empty,
-  }),
-);
+const EASYTIER_MOBILE_POLL_INTERVAL = "5 seconds";
+const EASYTIER_MOBILE_TOKEN_REFRESH_SKEW_MS = 60_000;
+
+interface CachedMobilePeerRegistration {
+  readonly signature: string;
+  readonly registration: PlatformConnectionRegistration;
+  readonly expiresAtEpochMs?: number;
+}
 
 const layerProvidedConnectionStorage = ConnectionStorage.layer.pipe(Layer.provide(Runtime.layer));
 const layerProvidedCapabilities = layerCapabilities.pipe(Layer.provide(Runtime.layer));
+
+/**
+ * Automatically discovers every EasyTier mesh machine behind any saved Public Gateway
+ * (or direct EasyTier host) on Mobile, routing traffic through `/mesh/<environmentId>/`
+ * with the saved gateway bearer token — zero manual pairing per machine.
+ */
+const layerPlatformConnectionSource = Layer.effect(
+  PlatformConnectionSource.PlatformConnectionSource,
+  Effect.gen(function* () {
+    const targetStore = yield* Persistence.ConnectionTargetStore;
+    const profileStore = yield* ProfileStore.ConnectionProfileStore;
+    const credentialStore = yield* CredentialStore.ConnectionCredentialStore;
+    const cacheRef = yield* Ref.make(new Map<string, CachedMobilePeerRegistration>());
+    const clientMetadata = authClientMetadata(Constants.expoConfig?.version);
+
+    const buildMobileEasyTierRegistrations = Effect.gen(function* () {
+      const savedTargets = yield* targetStore.list.pipe(Effect.orElseSucceed(() => []));
+      const savedEnvironmentIds = new Set(savedTargets.map((target) => target.environmentId));
+      const previous = yield* Ref.get(cacheRef);
+      const next = new Map<string, CachedMobilePeerRegistration>();
+      const registrations: Array<PlatformConnectionRegistration> = [];
+      const emittedEnvironmentIds = new Set<string>(savedEnvironmentIds);
+      const nowMs = yield* Clock.currentTimeMillis;
+
+      for (const target of savedTargets) {
+        if (target._tag !== "BearerConnectionTarget") continue;
+        const profileOpt = yield* profileStore
+          .get(target.connectionId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (Option.isNone(profileOpt) || profileOpt.value._tag !== "BearerConnectionProfile") {
+          continue;
+        }
+        const profile = profileOpt.value;
+        // Skip proxied `/mesh/<id>/` profiles; only query top-level gateways / hosts.
+        if (profile.httpBaseUrl.includes("/mesh/")) continue;
+
+        const credentialOpt = yield* credentialStore
+          .get(target.connectionId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (
+          Option.isNone(credentialOpt) ||
+          credentialOpt.value._tag !== "BearerConnectionCredential"
+        ) {
+          continue;
+        }
+        const gatewayToken = credentialOpt.value.token;
+
+        const statusOpt = yield* fetchEasyTierMeshStatus({
+          httpBaseUrl: profile.httpBaseUrl,
+          bearerToken: gatewayToken,
+          timeoutMs: 5_000,
+        }).pipe(Effect.option);
+
+        if (Option.isNone(statusOpt) || !statusOpt.value.enabled) continue;
+        const status = statusOpt.value;
+
+        for (const peer of status.peers) {
+          if (!peer.online || emittedEnvironmentIds.has(peer.environmentId)) continue;
+          emittedEnvironmentIds.add(peer.environmentId);
+
+          if (status.preferGatewayProxy && peer.gatewayHttpBaseUrl && peer.gatewayWsBaseUrl) {
+            const cacheKey = `easytier-gateway:${peer.environmentId}`;
+            const signature = `gateway|${peer.gatewayHttpBaseUrl}|${peer.gatewayWsBaseUrl}|${peer.label}|${gatewayToken}`;
+            const cached = previous.get(cacheKey);
+            if (cached !== undefined && cached.signature === signature) {
+              next.set(cacheKey, cached);
+              registrations.push(cached.registration);
+              continue;
+            }
+            const registration = new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId: peer.environmentId,
+                label: peer.label,
+                connectionId: cacheKey,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId: cacheKey,
+                environmentId: peer.environmentId,
+                label: peer.label,
+                httpBaseUrl: peer.gatewayHttpBaseUrl,
+                wsBaseUrl: peer.gatewayWsBaseUrl,
+                network: "gateway",
+              }),
+              credential: new BearerConnectionCredential({ token: gatewayToken }),
+            });
+            next.set(cacheKey, { signature, registration });
+            registrations.push(registration);
+            continue;
+          }
+
+          // Phone is directly inside EasyTier mesh -> obtain zero-pairing peer session directly.
+          const cacheKey = `easytier:${peer.environmentId}`;
+          const signature = `easytier|${peer.httpBaseUrl}|${peer.wsBaseUrl}|${peer.label}`;
+          const cached = previous.get(cacheKey);
+          if (
+            cached !== undefined &&
+            cached.signature === signature &&
+            (cached.expiresAtEpochMs === undefined ||
+              cached.expiresAtEpochMs - EASYTIER_MOBILE_TOKEN_REFRESH_SKEW_MS > nowMs)
+          ) {
+            next.set(cacheKey, cached);
+            registrations.push(cached.registration);
+            continue;
+          }
+          const accessOpt = yield* bootstrapEasyTierMeshSession({
+            httpBaseUrl: peer.httpBaseUrl,
+            clientMetadata,
+            timeoutMs: 5_000,
+          }).pipe(Effect.option);
+          if (Option.isSome(accessOpt)) {
+            const registration = new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId: peer.environmentId,
+                label: peer.label,
+                connectionId: cacheKey,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId: cacheKey,
+                environmentId: peer.environmentId,
+                label: peer.label,
+                httpBaseUrl: peer.httpBaseUrl,
+                wsBaseUrl: peer.wsBaseUrl,
+                network: "easytier",
+              }),
+              credential: new BearerConnectionCredential({ token: accessOpt.value.access_token }),
+            });
+            next.set(cacheKey, {
+              signature,
+              registration,
+              expiresAtEpochMs: nowMs + accessOpt.value.expires_in * 1_000,
+            });
+            registrations.push(registration);
+          } else if (
+            cached !== undefined &&
+            cached.signature === signature &&
+            (cached.expiresAtEpochMs === undefined || cached.expiresAtEpochMs > nowMs)
+          ) {
+            next.set(cacheKey, cached);
+            registrations.push(cached.registration);
+          }
+        }
+      }
+
+      yield* Ref.set(cacheRef, next);
+      return registrations as ReadonlyArray<PlatformConnectionRegistration>;
+    }).pipe(Effect.provide(FetchHttpClient.layer));
+
+    return PlatformConnectionSource.PlatformConnectionSource.of({
+      registrations: Stream.concat(
+        Stream.make(undefined),
+        Stream.tick(EASYTIER_MOBILE_POLL_INTERVAL),
+      ).pipe(Stream.mapEffect(() => buildMobileEasyTierRegistrations)),
+    });
+  }),
+).pipe(Layer.provide(layerProvidedConnectionStorage));
 
 type ConnectionPlatformLayerSource =
   | typeof layerProvidedConnectionStorage

@@ -10,7 +10,9 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 // AppImage mounts change each run; the launcher must mount the image itself.
 const { logInfo, logWarning } = makeComponentLogger("desktop-cli-shim");
 
-export const MARKER = "Written by T3 Code: runs the desktop app's bundled t3 CLI.";
+export const CLI_COMMAND_NAME = "quixotic-cli";
+export const MARKER = "Written by Quixotic: runs the desktop app's bundled CLI.";
+const LEGACY_MARKER = "Written by T3 Code: runs the desktop app's bundled t3 CLI.";
 
 const SERVER_ENTRY = "apps/server/dist/bin.mjs";
 
@@ -19,7 +21,7 @@ const shellWord = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 const cmdText = (value: string) => value.replaceAll("%", "%%");
 const cmdWord = (value: string) => `"${cmdText(value)}"`;
 
-const MOVED = "T3 Code has moved or been removed. Open the app once to update this command.";
+const MOVED = "Quixotic has moved or been removed. Open the app once to update this command.";
 
 export type CliShimTarget =
   | { readonly kind: "appimage"; readonly appImage: string; readonly executableName: string }
@@ -137,12 +139,21 @@ export const renderCliShim = (input: {
   ].join("\n");
 };
 
-export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) =>
+const launcherPathFor = (
+  environment: DesktopEnvironment.DesktopEnvironment["Service"],
+  name: string,
+) =>
   environment.path.join(
     environment.baseDir,
     "bin",
-    environment.platform === "win32" ? "t3.cmd" : "t3",
+    environment.platform === "win32" ? `${name}.cmd` : name,
   );
+
+export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) =>
+  launcherPathFor(environment, CLI_COMMAND_NAME);
+
+export const legacyLauncherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) =>
+  launcherPathFor(environment, "t3");
 
 export const install = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -162,28 +173,45 @@ export const install = Effect.gen(function* () {
         }),
         onNone: () => ({ kind: "direct" as const, executable: process.execPath, entry }),
       });
-  const content = renderCliShim({ target, shimPath, t3Home: environment.baseDir });
-
+  const writeLauncher = Effect.fn(function* (launcher: string, existing: string | undefined) {
+    const content = renderCliShim({ target, shimPath: launcher, t3Home: environment.baseDir });
+    if (existing !== content) {
+      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+      // Unique per call: backend startup and the first-launch command install can race here.
+      const staging = `${launcher}.${process.pid}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
+      yield* fs.writeFileString(staging, content, { mode: 0o755 });
+      yield* fs.rename(staging, launcher);
+      yield* logInfo("installed Quixotic CLI launcher", { launcher });
+    }
+  });
   return yield* Effect.gen(function* () {
-    const existing = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    if (Option.isSome(existing) && !existing.value.includes(MARKER)) {
-      yield* logWarning("leaving a t3 launcher the app did not write", { shimPath });
+    const existing = Option.getOrUndefined(yield* fs.readFileString(shimPath).pipe(Effect.option));
+    if (existing !== undefined && !existing.includes(MARKER)) {
+      yield* logWarning("leaving a launcher the app did not write", { shimPath });
       return Option.none<string>();
     }
-    if (Option.getOrUndefined(existing) !== content) {
-      yield* fs.makeDirectory(path.dirname(shimPath), { recursive: true });
-      // Unique per call: backend startup and the first-launch command install can race here.
-      const staging = `${shimPath}.${process.pid}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
-      yield* fs.writeFileString(staging, content, { mode: 0o755 });
-      yield* fs.rename(staging, shimPath);
-      yield* logInfo("installed t3 launcher", { shimPath });
+    yield* writeLauncher(shimPath, existing);
+
+    // Existing external links and service entries can still call this path after an upgrade.
+    const legacy = legacyLauncherPath(environment);
+    const old = yield* fs.readFileString(legacy).pipe(Effect.option);
+    if (Option.isSome(old) && (old.value.includes(LEGACY_MARKER) || old.value.includes(MARKER))) {
+      yield* writeLauncher(legacy, old.value).pipe(
+        Effect.catchCause((cause) =>
+          logWarning("could not refresh the legacy CLI launcher", {
+            legacy,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
     }
     return Option.some(shimPath);
   }).pipe(
     Effect.catchCause((cause) =>
-      logWarning("could not install t3 launcher", { shimPath, cause: Cause.pretty(cause) }).pipe(
-        Effect.as(Option.none<string>()),
-      ),
+      logWarning("could not install Quixotic CLI launcher", {
+        shimPath,
+        cause: Cause.pretty(cause),
+      }).pipe(Effect.as(Option.none<string>())),
     ),
     Effect.withSpan("desktop.cliShim.install"),
   );

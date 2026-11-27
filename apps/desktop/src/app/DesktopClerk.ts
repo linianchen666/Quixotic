@@ -106,6 +106,7 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;
   const shell = yield* ElectronShell.ElectronShell;
+  const hostedAppOrigin = (yield* HostProcess.Environment).T3CODE_HOSTED_APP_URL;
 
   // Must not yield: the bridge registers a scheme Electron rejects once ready.
   const userDataPath = yield* DesktopUserData.resolveUserDataPath(environment);
@@ -172,7 +173,7 @@ export const make = Effect.gen(function* () {
 
       const startProviderAuthHandoff = (value: string | undefined) => {
         if (!value) return false;
-        const request = readCodexAuthHandoff(value, environment.isDevelopment);
+        const request = readCodexAuthHandoff(value, environment.isDevelopment, hostedAppOrigin);
         if (!request) return false;
         void runPromise(
           Effect.gen(function* () {
@@ -182,7 +183,7 @@ export const make = Effect.gen(function* () {
                 receiveCodexAuthCallback(
                   request.authorizationUrl,
                   (url) => runPromise(shell.openExternal(url)),
-                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl),
+                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl, hostedAppOrigin),
                   signal,
                 ),
               catch: () =>
@@ -198,7 +199,7 @@ export const make = Effect.gen(function* () {
         return true;
       };
       const resumeProviderAuth = (value: string | undefined) => {
-        const destination = providerAuthReturnUrl(value);
+        const destination = providerAuthReturnUrl(value, hostedAppOrigin);
         const expectedOrigin = `${ElectronProtocol.getDesktopScheme(environment.isDevelopment)}://app`;
         if (!destination?.startsWith(`${expectedOrigin}/`)) return false;
         void runPromise(

@@ -70,7 +70,6 @@ import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSheet";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { LinkedThreadSheet } from "./features/threads/LinkedThreadSheet";
-import { ThreadGuestShareSheet } from "./features/threads/ThreadGuestShareSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
 import {
@@ -214,7 +213,7 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   ThreadFiles: msg("Files"),
   WorkflowRun: msg("Run", { $context: "noun, page title for one workflow run" }),
   SettingsLegal: msg("Legal"),
-  ConnectOnboarding: msg("Set up {product}", { product: "T3 Connect" }),
+  ConnectOnboarding: msg("Set up {product}", { product: "Self-hosted relay" }),
   Connections: msg("Environments"),
   ConnectionsNew: msg("Add Environment"),
 };
@@ -812,10 +811,6 @@ const RootStackConfig = createWorkspaceStackNavigator({
     LinkedThreadFullscreen: createNativeStackScreen({
       screen: LinkedThreadSheet,
       options: modalRoute({ header: "glass", itemStyle: "editor", duoMinimize: "onScrollUp" }),
-    }),
-    ThreadGuestShare: createNativeStackScreen({
-      screen: ThreadGuestShareSheet,
-      options: sheetRoute({ detent: 0.5 }),
     }),
     GitOverview: createNativeStackScreen({
       screen: GitOverviewSheet,

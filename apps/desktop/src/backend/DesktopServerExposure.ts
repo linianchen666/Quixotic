@@ -3,32 +3,30 @@ import {
   type CreateAdvertisedEndpointInput,
 } from "@t3tools/shared/advertisedEndpoint";
 import {
+  isBenchmarkOrProxyTunIpv4,
+  isEasyTierInterfaceName,
+  isRfc1918Ipv4,
+  isSharedAddressSpaceHost,
+} from "@t3tools/shared/hostClassification";
+import {
   DesktopServerExposureModeSchema,
   type AdvertisedEndpoint,
   type AdvertisedEndpointProvider,
   type DesktopServerExposureMode,
   type DesktopServerExposureState,
 } from "@t3tools/contracts";
-import { isTailscaleIpv4Address, readTailscaleStatus } from "@t3tools/tailscale";
-import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as HttpClient from "effect/http/HttpClient";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopNetworkInterfaces from "./DesktopNetworkInterfaces.ts";
-import { resolveTailscaleAdvertisedEndpoints } from "./tailscaleEndpointProvider.ts";
-
-const TAILSCALE_STATUS_CACHE_TTL = Duration.seconds(60);
 
 const DESKTOP_LOOPBACK_HOST = "127.0.0.1";
 const DESKTOP_LAN_BIND_HOST = "0.0.0.0";
@@ -40,6 +38,8 @@ interface ResolvedDesktopServerExposure {
   readonly localWsUrl: string;
   readonly endpointUrl: string | null;
   readonly advertisedHost: string | null;
+  readonly easyTierHost: string | null;
+  readonly lanHost: string | null;
 }
 
 interface DesktopAdvertisedEndpointInput {
@@ -52,6 +52,13 @@ const DESKTOP_CORE_ENDPOINT_PROVIDER: AdvertisedEndpointProvider = {
   id: "desktop-core",
   label: "Desktop",
   kind: "core",
+  isAddon: false,
+};
+
+const DESKTOP_EASYTIER_ENDPOINT_PROVIDER: AdvertisedEndpointProvider = {
+  id: "easytier",
+  label: "EasyTier",
+  kind: "private-network",
   isAddon: false,
 };
 
@@ -70,7 +77,8 @@ const normalizeOptionalHost = (value: string | undefined): string | undefined =>
 const isUsableLanIpv4Address = (address: string): boolean =>
   !address.startsWith("127.") &&
   !address.startsWith("169.254.") &&
-  !isTailscaleIpv4Address(address);
+  !isBenchmarkOrProxyTunIpv4(address) &&
+  !isSharedAddressSpaceHost(address);
 
 // Private bridges and VM adapters are fallbacks; host bridges can carry the real LAN address.
 const HOST_ONLY_INTERFACE =
@@ -82,6 +90,25 @@ const isHttpsEndpointUrl = (value: string): boolean => {
   } catch {
     return false;
   }
+};
+
+const resolveEasyTierHost = (
+  networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces,
+): string | null => {
+  for (const [name, addresses] of Object.entries(networkInterfaces)) {
+    if (!isEasyTierInterfaceName(name)) continue;
+    for (const address of addresses ?? []) {
+      if (
+        !address.internal &&
+        address.family === "IPv4" &&
+        isRfc1918Ipv4(address.address) &&
+        !isBenchmarkOrProxyTunIpv4(address.address)
+      ) {
+        return address.address;
+      }
+    }
+  }
+  return null;
 };
 
 const resolveLanAdvertisedHost = (
@@ -123,13 +150,14 @@ const resolveDesktopServerExposure = (input: {
       localWsUrl,
       endpointUrl: null,
       advertisedHost: null,
+      easyTierHost: null,
+      lanHost: null,
     };
   }
 
-  const advertisedHost = resolveLanAdvertisedHost(
-    input.networkInterfaces,
-    input.advertisedHostOverride,
-  );
+  const easyTierHost = resolveEasyTierHost(input.networkInterfaces);
+  const lanHost = resolveLanAdvertisedHost(input.networkInterfaces, input.advertisedHostOverride);
+  const advertisedHost = normalizeOptionalHost(input.advertisedHostOverride) ?? easyTierHost ?? lanHost;
 
   return {
     mode: input.mode,
@@ -138,6 +166,8 @@ const resolveDesktopServerExposure = (input: {
     localWsUrl,
     endpointUrl: advertisedHost ? `http://${advertisedHost}:${input.port}` : null,
     advertisedHost,
+    easyTierHost,
+    lanHost: lanHost && lanHost !== easyTierHost ? lanHost : null,
   };
 };
 
@@ -173,15 +203,38 @@ const resolveDesktopCoreAdvertisedEndpoints = (
     }),
   ];
 
-  if (input.exposure.endpointUrl) {
+  if (input.exposure.easyTierHost) {
+    const easyTierUrl = `http://${input.exposure.easyTierHost}:${input.port}`;
     endpoints.push(
-      createDesktopEndpoint({
-        id: `desktop-lan:${input.exposure.endpointUrl}`,
-        label: "Local network",
-        httpBaseUrl: input.exposure.endpointUrl,
-        reachability: "lan",
+      createAdvertisedEndpoint({
+        id: `desktop-easytier:${easyTierUrl}`,
+        label: "EasyTier",
+        provider: DESKTOP_EASYTIER_ENDPOINT_PROVIDER,
+        source: "desktop-core",
+        httpBaseUrl: easyTierUrl,
+        reachability: "private-network",
         status: "available",
         isDefault: true,
+        description: "Automatically discovered by other Quixotic nodes in your EasyTier mesh.",
+      }),
+    );
+  }
+
+  const lanUrl = input.exposure.lanHost
+    ? `http://${input.exposure.lanHost}:${input.port}`
+    : !input.exposure.easyTierHost
+      ? input.exposure.endpointUrl
+      : null;
+
+  if (lanUrl) {
+    endpoints.push(
+      createDesktopEndpoint({
+        id: `desktop-lan:${lanUrl}`,
+        label: "Local network",
+        httpBaseUrl: lanUrl,
+        reachability: "lan",
+        status: "available",
+        isDefault: !input.exposure.easyTierHost,
         description: "Reachable from devices on the same network.",
       }),
     );
@@ -300,6 +353,8 @@ interface RuntimeState {
   readonly httpBaseUrl: URL;
   readonly endpointUrl: Option.Option<string>;
   readonly advertisedHost: Option.Option<string>;
+  readonly easyTierHost: Option.Option<string>;
+  readonly lanHost: Option.Option<string>;
   readonly tailscaleServeEnabled: boolean;
   readonly tailscaleServePort: number;
 }
@@ -344,6 +399,8 @@ const toResolvedExposure = (state: RuntimeState): ResolvedDesktopServerExposure 
   localWsUrl: state.localWsUrl,
   endpointUrl: Option.getOrNull(state.endpointUrl),
   advertisedHost: Option.getOrNull(state.advertisedHost),
+  easyTierHost: Option.getOrNull(state.easyTierHost),
+  lanHost: Option.getOrNull(state.lanHost),
 });
 
 function runtimeStateFromResolvedExposure(input: {
@@ -362,7 +419,9 @@ function runtimeStateFromResolvedExposure(input: {
     httpBaseUrl: new URL(input.exposure.localHttpUrl),
     endpointUrl: Option.fromNullishOr(input.exposure.endpointUrl),
     advertisedHost: Option.fromNullishOr(input.exposure.advertisedHost),
-    tailscaleServeEnabled: input.settings.tailscaleServeEnabled,
+    easyTierHost: Option.fromNullishOr(input.exposure.easyTierHost),
+    lanHost: Option.fromNullishOr(input.exposure.lanHost),
+    tailscaleServeEnabled: false,
     tailscaleServePort: input.settings.tailscaleServePort,
   };
 }
@@ -382,14 +441,7 @@ function resolveRuntimeState(input: {
     ...(advertisedHostOverride ? { advertisedHostOverride } : {}),
   });
   const unavailable =
-    input.requestedMode === "network-accessible" &&
-    requestedExposure.endpointUrl === null &&
-    !Object.values(input.networkInterfaces).some((addresses) =>
-      addresses?.some(
-        (address) =>
-          !address.internal && address.family === "IPv4" && isTailscaleIpv4Address(address.address),
-      ),
-    );
+    input.requestedMode === "network-accessible" && requestedExposure.endpointUrl === null;
   const exposure = unavailable
     ? resolveDesktopServerExposure({
         mode: "local-only",
@@ -411,7 +463,7 @@ function resolveRuntimeState(input: {
 }
 
 // A network-accessible backend binds every interface, so a new Wi-Fi network
-// or DHCP lease changes only the address worth advertising, not the binding.
+// or EasyTier lease changes only the address worth advertising, not the binding.
 const withCurrentAdvertisedHost = (
   state: RuntimeState,
   networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces,
@@ -431,27 +483,10 @@ const withCurrentAdvertisedHost = (
     ...state,
     endpointUrl: Option.fromNullishOr(exposure.endpointUrl),
     advertisedHost: Option.fromNullishOr(exposure.advertisedHost),
+    easyTierHost: Option.fromNullishOr(exposure.easyTierHost),
+    lanHost: Option.fromNullishOr(exposure.lanHost),
   };
 };
-
-const tailscaleIpv4AddressKey = (
-  networkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces,
-): string =>
-  [
-    ...new Set(
-      Object.values(networkInterfaces)
-        .flatMap((addresses) => addresses ?? [])
-        .filter(
-          (address) =>
-            !address.internal &&
-            address.family === "IPv4" &&
-            isTailscaleIpv4Address(address.address),
-        )
-        .map((address) => address.address),
-    ),
-  ]
-    .toSorted()
-    .join(",");
 
 const requiresBackendRelaunch = (previous: RuntimeState, next: RuntimeState): boolean =>
   previous.port !== next.port ||
@@ -462,24 +497,10 @@ const requiresBackendRelaunch = (previous: RuntimeState, next: RuntimeState): bo
 export const make = Effect.gen(function* () {
   const config = yield* DesktopConfig.DesktopConfig;
   const networkInterfaces = yield* DesktopNetworkInterfaces.DesktopNetworkInterfaces;
-  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const httpClient = yield* HttpClient.HttpClient;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const stateRef = yield* Ref.make(initialRuntimeState());
   // Serialize read-persist-write changes so stale runtime state cannot overwrite another update.
   const changePermit = yield* Semaphore.make(1);
-
-  // Key status by interface addresses so network changes bypass stale DNS and
-  // identity. Cache unchanged addresses to avoid repeated macOS TCC prompts.
-  const tailscaleStatusCache = yield* Cache.make({
-    capacity: 1,
-    timeToLive: TAILSCALE_STATUS_CACHE_TTL,
-    lookup: (_addresses: string) =>
-      readTailscaleStatus.pipe(
-        Effect.orElseSucceed(() => null),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-      ),
-  });
 
   const readNetworkInterfaces = networkInterfaces.read;
 
@@ -568,34 +589,13 @@ export const make = Effect.gen(function* () {
   const setTailscaleServeEnabled = Effect.fn("desktop.serverExposure.setTailscaleServeEnabled")(
     function* (input: { readonly enabled: boolean; readonly port?: number }) {
       yield* Effect.annotateCurrentSpan({
-        enabled: input.enabled,
+        enabled: false,
         ...(input.port === undefined ? {} : { port: input.port }),
       });
-      const result = yield* desktopSettings
-        .setTailscaleServe({
-          enabled: input.enabled,
-          port: Option.fromNullishOr(input.port),
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new DesktopTailscaleServePersistenceError({
-                enabled: input.enabled,
-                port: input.port ?? null,
-                cause,
-              }),
-          ),
-        );
-
-      const nextState = yield* Ref.updateAndGet(stateRef, (current) => ({
-        ...current,
-        tailscaleServeEnabled: withinPolicy(result.settings).tailscaleServeEnabled,
-        tailscaleServePort: result.settings.tailscaleServePort,
-      }));
-
+      const current = yield* Ref.get(stateRef);
       return {
-        state: toContractState(nextState),
-        requiresRelaunch: result.changed,
+        state: toContractState({ ...current, tailscaleServeEnabled: false }),
+        requiresRelaunch: false,
       };
     },
     changePermit.withPermit,
@@ -604,31 +604,11 @@ export const make = Effect.gen(function* () {
   const getAdvertisedEndpoints = Effect.gen(function* () {
     const currentNetworkInterfaces = yield* readNetworkInterfaces;
     const state = yield* readCurrentState(currentNetworkInterfaces);
-    const coreEndpoints = resolveDesktopCoreAdvertisedEndpoints({
+    return resolveDesktopCoreAdvertisedEndpoints({
       port: state.port,
       exposure: toResolvedExposure(state),
       customHttpsEndpointUrls: config.desktopHttpsEndpointUrls,
     });
-
-    // Spawning Mac App Store Tailscale can prompt for TCC access even when exposure is disabled.
-    if (state.mode !== "network-accessible" && !state.tailscaleServeEnabled) {
-      return coreEndpoints;
-    }
-
-    const tailscaleEndpoints = yield* resolveTailscaleAdvertisedEndpoints({
-      port: state.port,
-      serveEnabled: state.tailscaleServeEnabled,
-      servePort: state.tailscaleServePort,
-      networkInterfaces: currentNetworkInterfaces,
-      readStatus: Cache.get(
-        tailscaleStatusCache,
-        tailscaleIpv4AddressKey(currentNetworkInterfaces),
-      ),
-    }).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-    );
-    return [...coreEndpoints, ...tailscaleEndpoints];
   }).pipe(Effect.withSpan("desktop.serverExposure.getAdvertisedEndpoints"));
 
   return DesktopServerExposure.of({

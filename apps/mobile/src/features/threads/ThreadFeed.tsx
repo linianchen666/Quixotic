@@ -1,3 +1,4 @@
+import { configuredAppLinkOrigin } from "../../lib/configuredAppLinkOrigin";
 import { CollapsibleUserMessageBody } from "./CollapsibleUserMessageBody";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import { m } from "../../i18n/messages";
@@ -345,8 +346,10 @@ import {
 import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
 
 const linkedThreadEnvironmentIds = (markdown: string, environmentId: EnvironmentId) =>
-  hasThreadLinks(markdown)
-    ? threadLinkRefs(markdown, environmentId).map((ref) => ref.environmentId)
+  hasThreadLinks(markdown, configuredAppLinkOrigin)
+    ? threadLinkRefs(markdown, environmentId, configuredAppLinkOrigin).map(
+        (ref) => ref.environmentId,
+      )
     : [];
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
@@ -1322,7 +1325,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
     props.markdown,
     props.environmentId,
     useLinkedEnvironments(
-      hasThreadLinks(props.markdown) ? props.environmentId : null,
+      hasThreadLinks(props.markdown, configuredAppLinkOrigin) ? props.environmentId : null,
       linkedThreadEnvironmentIds(props.markdown, props.environmentId),
     ),
   );
@@ -1818,7 +1821,7 @@ function ThreadAutomationMessageRow(props: {
   );
 }
 
-/** Leads with why T3 Code compacted, when it did so without being asked. */
+/** Leads with why Quixotic compacted, when it did so without being asked. */
 function compactionLabel(
   label: string,
   title: string | undefined,
@@ -2387,7 +2390,7 @@ function renderFeedEntry(
         >
           {presentation.attribution === "t3code" ? (
             <Text className="mb-1 pr-1 font-t3-medium text-2xs text-foreground-muted opacity-60">
-              {m(msg("Sent by T3 Code"))}
+              {m(msg("Sent by Quixotic"))}
             </Text>
           ) : null}
           {presentation.guestName !== undefined ? (
@@ -2760,7 +2763,7 @@ function UserMessageContent(props: UserMessageContentProps) {
     props.text,
     props.environmentId,
     useLinkedEnvironments(
-      hasThreadLinks(props.text) ? props.environmentId : null,
+      hasThreadLinks(props.text, configuredAppLinkOrigin) ? props.environmentId : null,
       linkedThreadEnvironmentIds(props.text, props.environmentId),
     ),
   );
@@ -3234,7 +3237,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     });
   };
   const resolveLinkedThread = (href: string) => {
-    const link = parseThreadLinkHref(href);
+    const link = parseThreadLinkHref(href, configuredAppLinkOrigin);
     if (!link) return null;
     const resolved = resolveThreadLink(
       (atom) => appAtomRegistry.get(atom),
@@ -3379,7 +3382,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       );
       return;
     }
-    if (parseThreadLinkHref(href)) {
+    if (parseThreadLinkHref(href, configuredAppLinkOrigin)) {
       const target = resolveLinkedThread(href);
       if (target) openThreadLink(target);
       return;
@@ -3527,7 +3530,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       const thread = resolveLinkedThread(href);
       if (thread) {
         if (actionId === "open-thread") onMarkdownLinkPress(href);
-        else if (actionId === "copy-thread-link") copyTextWithHaptic(hostedThreadLink(thread));
+        else if (actionId === "copy-thread-link")
+          copyTextWithHaptic(hostedThreadLink(thread, configuredAppLinkOrigin));
         return;
       }
       const deviceUrl = deviceLoopbackUrl(href);

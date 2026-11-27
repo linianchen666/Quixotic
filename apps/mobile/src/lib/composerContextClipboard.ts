@@ -1,3 +1,4 @@
+import { configuredAppLinkOrigin } from "./configuredAppLinkOrigin";
 import { requireNativeModule } from "expo";
 import { msg } from "gt-react-native";
 import { m } from "../i18n/messages";
@@ -90,6 +91,7 @@ export async function importComposerContextClipboard(
       linkedEnvironments.has(record.environmentId)
         ? record.contextId
         : undefined,
+    configuredAppLinkOrigin,
   );
   const source =
     copied?.source ??

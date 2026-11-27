@@ -1,8 +1,5 @@
-# Security policy
+# Reporting a vulnerability
 
-Report security vulnerabilities affecting T3 Code or T3 Tools-operated infrastructure to
-[security@t3.codes](mailto:security@t3.codes). Please do not disclose them publicly until we have had
-a reasonable opportunity to investigate and remediate them.
+Use [GitHub's private vulnerability reporting](https://github.com/linianchen666/Quixotic/security/advisories/new) for vulnerabilities in Quixotic. Keep details private while the report is investigated.
 
-See the [full security policy](https://t3.codes/security-policy) for reporting details, scope,
-and safe harbor terms for good-faith research.
+See the [security model](../SECURITY.md) for the application's trust boundaries.

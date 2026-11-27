@@ -148,6 +148,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   localServerStop: Schema.optionalKey(Schema.Boolean),
   /** Honors `enablePreviewTunnel`; hide the switch where absent, since the tunnel stays on there. */
   previewTunnelSetting: Schema.optionalKey(Schema.Boolean),
+  devicePairingAddresses: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),

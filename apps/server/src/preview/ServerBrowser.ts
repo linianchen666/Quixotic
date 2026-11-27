@@ -304,7 +304,7 @@ export class ServerBrowser extends Context.Service<
 
     readonly profileReporter: Effect.Effect<ProfileReporter, never, Scope.Scope>;
   }
->()("t3/preview/ServerBrowser") {}
+>()("quixotic-cli/preview/ServerBrowser") {}
 
 interface ViewerState {
   readonly id: string;
@@ -2885,7 +2885,7 @@ const make = Effect.gen(function* () {
           throw new ServerBrowserPage.ServerBrowserOperationError({
             tag: "PreviewAutomationExecutionError",
             message:
-              "The desktop did not draw the page at the new size. Show or restore the T3 Code window and try again.",
+              "The desktop did not draw the page at the new size. Show or restore the Quixotic window and try again.",
           });
         }
         // Only a read after the draw, with no page resize or load during it, measures this resize.

@@ -153,3 +153,6 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
 
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
+export const GET_DATA_DIRECTORY_STATE_CHANNEL = "desktop:get-data-directory-state";
+export const MIGRATE_DATA_DIRECTORY_CHANNEL = "desktop:migrate-data-directory";
+export const OPEN_DATA_DIRECTORY_CHANNEL = "desktop:open-data-directory";

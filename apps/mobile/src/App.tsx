@@ -20,7 +20,6 @@ import {
   type NavigationState,
 } from "@react-navigation/native";
 import { pipe } from "effect/Function";
-import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
 
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { ProjectChipIconRasterizer } from "./native/ProjectChipIconImages";
@@ -56,6 +55,7 @@ import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-
 import { environmentThreadShells, threadEnvironment } from "./state/threads";
 import { environmentShell, shellCachesReadAtom } from "./state/shell";
 import { OverlayPortalHost } from "./components/ui/OverlayPortal";
+import { configuredAppLinkOrigin } from "./lib/configuredAppLinkOrigin";
 import { shouldHandleAppLink, restoreDraftLinkState } from "./lib/appLinking";
 import { hasCloudPublicConfig } from "./features/cloud/publicConfig";
 import { takeScheduledTaskNewLink } from "./features/settings/scheduled-task-editor-state";
@@ -143,7 +143,12 @@ const appLinking = {
     "quixotic://",
     "quixotic-dev://",
     "quixotic-preview://",
-    DEFAULT_HOSTED_APP_URL,
+    "t3code://",
+    "t3code-dev://",
+    "t3code-preview://",
+    // Parse already-published URLs without depending on the upstream hosted app.
+    "https://app.t3.codes",
+    ...(configuredAppLinkOrigin ? [configuredAppLinkOrigin] : []),
   ],
   config: { initialRouteName: "Home" },
   filter: (url: string) => shouldHandleAppLink(url, hasCloudPublicConfig()),

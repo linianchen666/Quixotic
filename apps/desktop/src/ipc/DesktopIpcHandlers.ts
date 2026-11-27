@@ -23,6 +23,11 @@ import {
   setTailscaleServeEnabled,
 } from "./methods/serverExposure.ts";
 import {
+  getDataDirectoryState,
+  migrateDataDirectory,
+  openDataDirectory,
+} from "./methods/dataDirectory.ts";
+import {
   bootstrapSshBearerSession,
   disconnectSshEnvironment,
   discoverSshHosts,
@@ -146,6 +151,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setServerExposureMode);
   yield* ipc.handle(setTailscaleServeEnabled);
   yield* ipc.handle(getAdvertisedEndpoints);
+  yield* ipc.handle(getDataDirectoryState);
+  yield* ipc.handle(migrateDataDirectory);
+  yield* ipc.handle(openDataDirectory);
 
   yield* ipc.handle(getWslState);
   yield* ipc.handle(setWslBackendEnabled);

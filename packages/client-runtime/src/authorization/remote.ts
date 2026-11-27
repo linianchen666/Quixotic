@@ -8,6 +8,7 @@ import {
   type AuthWebSocketTicketResult,
   type AuthWebSocketTicketUse,
 } from "@t3tools/contracts";
+import { resolveRpcSocketUrl } from "@t3tools/shared/advertisedEndpoint";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
@@ -238,12 +239,87 @@ export const issueRemoteDpopWebSocketTicket = Effect.fn(
   );
 });
 
+export const bootstrapEasyTierMeshSession = Effect.fn(
+  "clientRuntime.authorization.bootstrapEasyTierMeshSession",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly clientMetadata?: AuthClientPresentationMetadata;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(input.httpBaseUrl, "easytier");
+  const displayOs = input.clientMetadata?.os;
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/easytier/mesh-session"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.meshSession({
+      payload: {
+        ...(input.clientMetadata?.label ? { clientLabel: input.clientMetadata.label } : {}),
+        ...(input.clientMetadata?.deviceType
+          ? { clientDeviceType: input.clientMetadata.deviceType }
+          : {}),
+        ...(displayOs && displayOs !== "unknown" && displayOs !== "other"
+          ? { clientOs: displayOs }
+          : {}),
+      },
+    }),
+  );
+});
+
+export const fetchEasyTierMeshStatus = Effect.fn(
+  "clientRuntime.authorization.fetchEasyTierMeshStatus",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken?: string;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(input.httpBaseUrl, "easytier");
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/easytier/status"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.status({
+      headers: input.bearerToken ? { authorization: `Bearer ${input.bearerToken}` } : {},
+    }),
+  );
+});
+
+export const refreshEasyTierMeshStatus = Effect.fn(
+  "clientRuntime.authorization.refreshEasyTierMeshStatus",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken?: string;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(input.httpBaseUrl, "easytier");
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/easytier/refresh"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.refresh({
+      headers: input.bearerToken ? { authorization: `Bearer ${input.bearerToken}` } : {},
+    }),
+  );
+});
+
+export const updateEasyTierGatewayPassword = Effect.fn(
+  "clientRuntime.authorization.updateEasyTierGatewayPassword",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken?: string;
+  readonly password: string | null;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(input.httpBaseUrl, "easytier");
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/easytier/gateway-password"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.setGatewayPassword({
+      headers: input.bearerToken ? { authorization: `Bearer ${input.bearerToken}` } : {},
+      payload: { password: input.password },
+    }),
+  );
+});
+
 function rpcSocketUrl(wsBaseUrl: string): URL {
-  const url = new URL(wsBaseUrl);
-  if (url.pathname === "" || url.pathname === "/") {
-    url.pathname = "/ws";
-  }
-  return url;
+  return resolveRpcSocketUrl(wsBaseUrl);
 }
 
 export const resolveRemoteWebSocketConnectionUrl = Effect.fn(

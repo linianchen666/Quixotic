@@ -1,14 +1,5 @@
 {
   "applinks": {
-    "details": [
-      {
-        "appIDs": [
-          "ARK85ZXQ4Z.com.quixotic.app",
-          "ARK85ZXQ4Z.com.quixotic.app.preview",
-          "ARK85ZXQ4Z.com.quixotic.app.dev"
-        ],
-        "components": [{ "/": "/threads/*" }]
-      }
-    ]
+    "details": []
   }
 }

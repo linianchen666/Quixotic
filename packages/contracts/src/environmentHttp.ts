@@ -43,6 +43,12 @@ import {
   ServerAuthSessionMethod,
 } from "./auth.ts";
 import {
+  EasyTierGatewayPasswordUpdateInput,
+  EasyTierGatewayPasswordUpdateResult,
+  EasyTierMeshSessionRequest,
+  EasyTierMeshStatus,
+} from "./easytier.ts";
+import {
   ExecutionEnvironmentDescriptor,
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -528,7 +534,7 @@ export type T3ConnectTroubleshootingSection = (typeof T3_CONNECT_TROUBLESHOOTING
 
 /** Clients, the CLI, and server logs link here as "More info". */
 export function t3ConnectTroubleshootingUrl(section: T3ConnectTroubleshootingSection): string {
-  return `https://github.com/pingdotgg/t3code/blob/main/docs/user/t3-connect-troubleshooting.md#${section}`;
+  return `https://github.com/linianchen666/Quixotic/blob/main/docs/user/t3-connect-troubleshooting.md#${section}`;
 }
 
 const REACHABILITY_SECTION = {
@@ -588,6 +594,7 @@ export type AuthOtherClientSessionsRevokeResult = typeof AuthOtherClientSessions
 
 class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
   HttpApiEndpoint.get("descriptor", "/.well-known/t3/environment", {
+    headers: OptionalBearerHeaders,
     success: ExecutionEnvironmentDescriptor,
   }),
 ) {}
@@ -1100,9 +1107,48 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint))
   .annotate(HttpApi.RedactedNames, { params: ["token"] }) {}
 
+class EnvironmentEasyTierHttpApi extends HttpApiGroup.make("easytier")
+  .add(
+    HttpApiEndpoint.get("status", "/api/easytier/status", {
+      headers: OptionalBearerHeaders,
+      success: EasyTierMeshStatus,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/api/easytier/refresh", {
+      headers: OptionalBearerHeaders,
+      success: EasyTierMeshStatus,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("setGatewayPassword", "/api/easytier/gateway-password", {
+      headers: OptionalBearerHeaders,
+      payload: EasyTierGatewayPasswordUpdateInput,
+      success: EasyTierGatewayPasswordUpdateResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("meshSession", "/api/easytier/mesh-session", {
+      payload: EasyTierMeshSessionRequest,
+      success: AuthAccessTokenResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("meshBrowserSession", "/api/easytier/mesh-browser-session", {
+      payload: EasyTierMeshSessionRequest,
+      success: AuthBrowserSessionResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
+  .add(EnvironmentEasyTierHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)

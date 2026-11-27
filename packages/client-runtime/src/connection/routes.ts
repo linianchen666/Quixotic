@@ -19,7 +19,9 @@ import type { MFunctionType } from "gt-i18n/types";
 export type ConnectionRouteKind =
   | "relay"
   | "loopback"
+  | "easytier"
   | "lan"
+  | "gateway"
   | "tailnet"
   | "vpn"
   | "public"
@@ -98,9 +100,21 @@ export function connectionRouteKind(route: ConnectionRoute): ConnectionRouteKind
       return "ssh";
     case "PrimaryConnectionTarget":
     case "BearerConnectionTarget": {
+      const httpBaseUrl = routeHttpBaseUrl(route);
       const hostname = routeHostname(route);
       if (hostname === null) return "public";
       const profile = Option.getOrNull(route.profile);
+      if (profile?._tag === "BearerConnectionProfile") {
+        if (profile.network === "easytier") return "easytier";
+        if (profile.network === "gateway") return "gateway";
+      }
+      if (httpBaseUrl !== null) {
+        try {
+          if (new URL(httpBaseUrl).pathname.startsWith("/mesh/")) {
+            return "gateway";
+          }
+        } catch {}
+      }
       return directAddressKind(
         hostname,
         profile?._tag === "BearerConnectionProfile" && profile.network === "tailscale",
@@ -132,12 +146,14 @@ export function isNearbyAddress(httpBaseUrl: string): boolean {
 
 const ROUTE_KIND_RANK: Record<ConnectionRouteKind, number> = {
   loopback: 0,
-  lan: 1,
-  tailnet: 2,
-  vpn: 2,
-  public: 3,
-  ssh: 4,
-  relay: 5,
+  easytier: 1,
+  lan: 2,
+  gateway: 3,
+  tailnet: 4,
+  vpn: 4,
+  public: 5,
+  ssh: 6,
+  relay: 7,
 };
 
 export function insertRoute(
@@ -188,7 +204,7 @@ function routeAddressKey(route: ConnectionRoute): string | null {
   }
 }
 
-const T3_CONNECT_NAME = "T3 Connect";
+const T3_CONNECT_NAME = "self-hosted relay";
 
 /** The route's label in English. Display sites use `connectionRouteLabelText`. */
 export function connectionRouteLabel(route: ConnectionRoute): string {
@@ -197,6 +213,10 @@ export function connectionRouteLabel(route: ConnectionRoute): string {
       return T3_CONNECT_NAME;
     case "loopback":
       return msg("This device");
+    case "easytier":
+      return "EasyTier";
+    case "gateway":
+      return msg("Public gateway");
     case "lan":
       return "LAN";
     case "tailnet":
@@ -226,6 +246,8 @@ export function connectionRouteLabelText(
   switch (connectionRouteKind(route)) {
     case "loopback":
       return resolve(msg("This device"));
+    case "gateway":
+      return resolve(msg("Public gateway"));
     case "public":
       return routeHostname(route) ?? resolve(msg("Remote link"));
     default:
@@ -278,6 +300,7 @@ export function mergeLearnedRoutes(input: {
       ? credentialConnectionId(active.connectionId)
       : undefined;
   const reported = new Map<string, URL>();
+  const easyTierOrigins = new Set<string>();
   const tailscaleOrigins = new Set<string>();
   for (const endpoint of input.reported) {
     let url: URL;
@@ -290,8 +313,10 @@ export function mergeLearnedRoutes(input: {
     if (url.protocol === "http:" && !input.allowInsecure) continue;
     // A loopback address names whichever device opens it, never the server.
     if (isLocalLoopbackHost(url.hostname)) continue;
+    // Do not learn legacy Tailscale routes anymore.
+    if (endpoint.kind === "tailnet") continue;
     reported.set(url.origin, url);
-    if (endpoint.kind === "tailnet") tailscaleOrigins.add(url.origin);
+    if (endpoint.kind === "easytier") easyTierOrigins.add(url.origin);
   }
   const normalized = (url: string) => url.replace(/\/+$/, "");
   const known = new Set(
@@ -300,27 +325,38 @@ export function mergeLearnedRoutes(input: {
       return url === null || isLearned(route) ? [] : [normalized(url)];
     }),
   );
+  const networkForOrigin = (origin: string): BearerConnectionProfile["network"] | undefined =>
+    easyTierOrigins.has(origin)
+      ? "easytier"
+      : tailscaleOrigins.has(origin)
+        ? "tailscale"
+        : undefined;
   const kept = saved.flatMap((route): ReadonlyArray<ConnectionRoute> => {
     const url = routeHttpBaseUrl(route);
     if (!isLearned(route)) {
       return [
         url === null || !reported.has(normalized(url))
           ? route
-          : withNetwork(route, tailscaleOrigins.has(normalized(url))),
+          : withNetwork(route, networkForOrigin(normalized(url))),
       ];
     }
     if (url === null || !reported.has(normalized(url)) || known.has(normalized(url))) return [];
-    if (sendsTokenInClear(saved, route, tailscaleOrigins.has(normalized(url)))) return [];
+    const targetNetwork = networkForOrigin(normalized(url));
+    if (sendsTokenInClear(saved, route, targetNetwork === "tailscale" || targetNetwork === "easytier")) {
+      return [];
+    }
     known.add(normalized(url));
-    return [withNetwork(route, tailscaleOrigins.has(normalized(url)))];
+    return [withNetwork(route, targetNetwork)];
   });
   let next: ReadonlyArray<ConnectionRoute> = kept;
   for (const url of reported.values()) {
     if (known.has(url.origin)) continue;
+    const targetNetwork = networkForOrigin(url.origin);
     if (
       url.protocol === "http:" &&
       sharedCredential !== undefined &&
-      !tailscaleOrigins.has(url.origin) &&
+      targetNetwork !== "tailscale" &&
+      targetNetwork !== "easytier" &&
       !tokenAllowsPlainHttp(saved, sharedCredential)
     ) {
       continue;
@@ -346,7 +382,7 @@ export function mergeLearnedRoutes(input: {
           wsBaseUrl: `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}/`,
           learned: true,
           ...(authorization === undefined ? {} : { authorization }),
-          ...(tailscaleOrigins.has(url.origin) ? { network: "tailscale" as const } : {}),
+          ...(targetNetwork === undefined ? {} : { network: targetNetwork }),
         }),
       ),
     });
@@ -373,6 +409,8 @@ function tokenAllowsPlainHttp(
     credentialRoute !== undefined &&
     routeHttpBaseUrl(credentialRoute)?.startsWith("http:") === true &&
     (connectionRouteKind(credentialRoute) === "lan" ||
+      connectionRouteKind(credentialRoute) === "easytier" ||
+      connectionRouteKind(credentialRoute) === "gateway" ||
       connectionRouteKind(credentialRoute) === "public")
   );
 }
@@ -385,13 +423,23 @@ function tokenAllowsPlainHttp(
 export function sendsTokenInClear(
   routes: ReadonlyArray<ConnectionRoute>,
   route: ConnectionRoute,
-  tailscale?: boolean,
+  trustedMesh?: boolean,
 ): boolean {
   const profile = Option.getOrNull(route.profile);
-  if (profile?._tag !== "BearerConnectionProfile" || profile.authorization === "t3-connect") {
+  if (
+    profile?._tag !== "BearerConnectionProfile" ||
+    profile.authorization === "t3-connect" ||
+    profile.authorization === "cookie"
+  ) {
     return false;
   }
-  if ((tailscale ?? profile.network === "tailscale") || !profile.httpBaseUrl.startsWith("http:")) {
+  if (
+    (trustedMesh ??
+      (profile.network === "tailscale" ||
+        profile.network === "easytier" ||
+        profile.network === "gateway")) ||
+    !profile.httpBaseUrl.startsWith("http:")
+  ) {
     return false;
   }
   const credentialId = credentialConnectionId(connectionRouteId(route.target));
@@ -411,10 +459,13 @@ export interface ReportedEndpoint {
   readonly kind?: string;
 }
 
-function withNetwork(route: ConnectionRoute, tailscale: boolean): ConnectionRoute {
+function withNetwork(
+  route: ConnectionRoute,
+  network: BearerConnectionProfile["network"] | undefined,
+): ConnectionRoute {
   const profile = Option.getOrNull(route.profile);
   if (profile?._tag !== "BearerConnectionProfile") return route;
-  if ((profile.network === "tailscale") === tailscale) return route;
+  if (profile.network === network) return route;
   return {
     target: route.target,
     profile: Option.some(
@@ -426,7 +477,7 @@ function withNetwork(route: ConnectionRoute, tailscale: boolean): ConnectionRout
         wsBaseUrl: profile.wsBaseUrl,
         ...(profile.learned === undefined ? {} : { learned: profile.learned }),
         ...(profile.authorization === undefined ? {} : { authorization: profile.authorization }),
-        ...(tailscale ? { network: "tailscale" as const } : {}),
+        ...(network === undefined ? {} : { network }),
       }),
     ),
   };
@@ -456,7 +507,7 @@ export function isLearned(route: ConnectionRoute): boolean {
 
 /**
  * A learned route borrows the credential of the route it was learned over, so
- * it cannot outlive that route: removing T3 Connect also removes routes learned
+ * it cannot outlive that route: removing self-hosted relay also removes routes learned
  * through it, and removing a paired address removes routes that borrow its
  * token.
  */

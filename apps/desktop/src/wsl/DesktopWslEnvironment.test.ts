@@ -115,17 +115,20 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     fixtures.length = 0;
   });
 
-  const createFixture = (serverEntry = SERVER_ENTRY_SOURCE) => {
+  const createFixture = (
+    serverEntry = SERVER_ENTRY_SOURCE,
+    archiveStem = "quixotic-cli-0.0.0-linux-x64",
+  ) => {
     const result = runShell(
       [
         "set -eu",
         "work=$(mktemp -d)",
-        'stage="$work/stage/t3-0.0.0-linux-x64"',
+        `stage="$work/stage/"${sh(archiveStem)}`,
         'mkdir -p "$stage/node_modules/node-pty/build/Release" "$work/home"',
         `printf '%s' ${sh(serverEntry)} > "$stage/t3"`,
         'chmod +x "$stage/t3"',
         `printf '%s' 'pty-native-payload' > "$stage/node_modules/node-pty/build/Release/pty.node"`,
-        `tar -czf "$work/wsl-runtime.tar.gz" -C "$work/stage" t3-0.0.0-linux-x64`,
+        `tar -czf "$work/wsl-runtime.tar.gz" -C "$work/stage" ${sh(archiveStem)}`,
         `printf 'work:%s\\n' "$work"`,
         `printf 'archiveSha:%s\\n' "$(sha256sum "$work/wsl-runtime.tar.gz" | cut -d ' ' -f 1)"`,
       ].join("\n"),
@@ -176,6 +179,17 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       ].join("\n"),
     );
 
+  it.each(["quixotic-cli-0.0.0-linux-x64", "t3-0.0.0-linux-x64"])(
+    "installs a runtime with the %s archive stem",
+    (archiveStem) => {
+      const fixture = createFixture(SERVER_ENTRY_SOURCE, archiveStem);
+      const install = fixture.install();
+      expect(install.status, install.stderr).toBe(0);
+      expect(parseWslRuntimeRoot(install.stdout)).toBe(fixture.runtimeRoot);
+      expect(runShell(`${sh(fixture.serverEntry)} --version`).status).toBe(0);
+    },
+  );
+
   it("discovers version-managed Node for providers with a standalone runtime", () => {
     const fixture = createFixture();
     expect(fixture.install().status).toBe(0);
@@ -218,7 +232,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(parseT3Home(probe.stdout)).toBe(t3Home);
   });
 
-  it("keeps the existing T3 Code database when no Quixotic database exists", () => {
+  it("keeps the existing Quixotic database when no Quixotic database exists", () => {
     const fixture = createFixture();
     const home = `${fixture.work}/home`;
     const probe = runShell(

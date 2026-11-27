@@ -22,6 +22,7 @@ export const taskFoldersTestProjectId = ProjectId.make("project:task-folders");
 
 /** What the mocked stores answer with; a test fills it in once its folders exist. */
 export interface TaskFoldersTestState {
+  onLayoutCommand?: Effect.Effect<void>;
   workspaceRoot: string;
   trackedFolders: ReadonlyArray<ProjectTrackedFolder>;
   thread: { worktreePath: string | null; branch: string | null } | null;
@@ -98,7 +99,19 @@ export const layerTaskFoldersWithGit = (state: TaskFoldersTestState) => {
         }),
         ServerSettings.layerTest(),
         SqlitePersistence.layerMemory,
-        VcsProcess.layer.pipe(Layer.provide(NodeServices.layer)),
+        Layer.effect(
+          VcsProcess.VcsProcess,
+          Effect.map(VcsProcess.VcsProcess, (processes) =>
+            VcsProcess.VcsProcess.of({
+              run: (input) =>
+                Effect.suspend(() =>
+                  input.operation === "TaskFolders.worktreeLayout"
+                    ? (state.onLayoutCommand ?? Effect.void)
+                    : Effect.void,
+                ).pipe(Effect.andThen(processes.run(input))),
+            }),
+          ),
+        ).pipe(Layer.provide(VcsProcess.layer.pipe(Layer.provide(NodeServices.layer)))),
       ),
     ),
   );

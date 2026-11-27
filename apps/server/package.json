@@ -1,13 +1,15 @@
 {
-  "name": "t3",
+  "name": "quixotic-cli",
+  "private": true,
   "version": "0.1.13",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pingdotgg/t3code",
+    "url": "https://github.com/linianchen666/Quixotic",
     "directory": "apps/server"
   },
   "bin": {
+    "quixotic-cli": "./dist/bin.mjs",
     "t3": "./dist/bin.mjs"
   },
   "files": [

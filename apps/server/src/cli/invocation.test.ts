@@ -19,7 +19,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     readonly node: string;
     readonly entry: string;
     readonly path?: string;
-    readonly env?: Record<string, string>;
+    readonly env?: NodeJS.ProcessEnv;
     readonly executable?: boolean;
     readonly args?: ReadonlyArray<string>;
   }) =>
@@ -31,120 +31,112 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
       Effect.provideService(HostProcess.Environment, { PATH: input.path ?? "", ...input.env }),
     );
 
-  const pathWithT3 = Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const bin = yield* fs.makeTempDirectoryScoped();
-    yield* fs.writeFileString(path.join(bin, "t3"), "#!/bin/sh\n", { mode: 0o755 });
-    return bin;
-  });
-
-  it.effect("keeps a user-installed Node reachable when the command runs under sudo", () =>
+  it.effect("uses the running Node and its local script under sudo", () =>
     Effect.gen(function* () {
-      const npx = "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs";
-      expect(yield* rootCommand({ node: "/usr/bin/node", entry: npx })).toBe(
-        "sudo npx t3 browser setup",
+      const cached = "/home/theo/.npm/_npx/abc/node_modules/quixotic-cli/dist/bin.mjs";
+      const legacy = "/home/theo/.local/lib/node_modules/t3/dist/bin.mjs";
+      for (const [node, entry] of [
+        ["/usr/bin/node", cached],
+        ["/home/theo/.nvm/versions/node/v24/bin/node", cached],
+        ["/home/theo/.local/node/bin/node", legacy],
+      ] as const) {
+        expect(yield* rootCommand({ node, entry })).toBe(`sudo ${node} ${entry} browser setup`);
+      }
+    }),
+  );
+
+  it.effect("quotes the executable, the script and each argument for the root shell", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* rootCommand({
+          node: "/opt/node js/node",
+          entry: "/opt/Quixotic CLI/dist/bin.mjs",
+          args: ["--base-dir", "/srv/Jane's home", ""],
+        }),
+      ).toBe(
+        `sudo '/opt/node js/node' '/opt/Quixotic CLI/dist/bin.mjs' browser setup --base-dir '/srv/Jane'"'"'s home' ''`,
       );
-      expect(
-        yield* rootCommand({ node: "/home/theo/.nvm/versions/node/v24/bin/node", entry: npx }),
-      ).toBe('sudo env "PATH=$PATH" npx t3 browser setup');
-      expect(
-        yield* rootCommand({
-          node: "/home/theo/.local/node/bin/node",
-          entry: "/home/theo/.local/lib/node_modules/t3/dist/bin.mjs",
-          path: yield* pathWithT3,
-        }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
     }),
   );
 
-  it.effect("keeps the arguments, so root runs setup on the same T3 home", () =>
-    Effect.gen(function* () {
-      const args = ["--base-dir", "/srv/t3 home"];
-      expect(
-        yield* rootCommand({
-          node: "/home/theo/.local/node/bin/node",
-          entry: "/home/theo/.local/lib/node_modules/t3/dist/bin.mjs",
-          path: yield* pathWithT3,
-          args,
-        }),
-      ).toBe(`sudo env "PATH=$PATH" t3 browser setup --base-dir '/srv/t3 home'`);
-      expect(
-        yield* rootCommand({ node: "/opt/t3/t3", entry: "/opt/t3/t3", executable: true, args }),
-      ).toBe("sudo /opt/t3/t3 browser setup --base-dir '/srv/t3 home'");
-    }),
-  );
-
-  it.effect("names this install's launcher when t3 is not on PATH", () =>
+  it.effect("uses the desktop launcher even when PATH points to another install", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const home = yield* fs.makeTempDirectoryScoped();
-      const shim = path.join(home, ".local bin", "t3");
+      const shim = path.join(home, ".local bin", "quixotic-cli");
+      const otherBin = path.join(home, "bin");
       yield* fs.makeDirectory(path.dirname(shim), { recursive: true });
+      yield* fs.makeDirectory(otherBin);
       yield* fs.writeFileString(shim, "#!/bin/sh\n", { mode: 0o755 });
+      yield* fs.writeFileString(path.join(otherBin, "quixotic-cli"), "#!/bin/sh\n", {
+        mode: 0o755,
+      });
       const desktop = {
-        node: "/tmp/.mount_T3abc/t3code",
-        entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
-        env: { T3CODE_CLI_PATH: shim },
+        node: "/opt/Quixotic/quixotic",
+        entry: "/opt/Quixotic/resources/app.asar/apps/server/dist/bin.mjs",
+        env: { T3CODE_CLI_PATH: shim, ELECTRON_RUN_AS_NODE: "1" },
       };
 
-      expect(yield* rootCommand(desktop)).toBe(`sudo '${shim}' browser setup`);
-
-      // An unrelated `t3` on PATH, such as an older npm global, is another install's CLI.
-      expect(yield* rootCommand({ ...desktop, path: yield* pathWithT3 })).toBe(
-        `sudo '${shim}' browser setup`,
+      for (const searchPath of ["", otherBin, path.dirname(shim)]) {
+        expect(yield* rootCommand({ ...desktop, path: searchPath })).toBe(
+          `sudo '${shim}' browser setup`,
+        );
+      }
+      yield* fs.remove(shim);
+      expect(yield* rootCommand(desktop)).toBe(
+        `sudo env ELECTRON_RUN_AS_NODE=1 ${desktop.node} ${desktop.entry} browser setup`,
       );
+    }),
+  );
 
-      // The link the app installs onto PATH leads to its own launcher, so plain `t3` is right.
-      const linked = yield* fs.makeTempDirectoryScoped();
-      yield* fs.symlink(shim, path.join(linked, "t3"));
-      expect(yield* rootCommand({ ...desktop, path: linked })).toBe(
-        'sudo env "PATH=$PATH" t3 browser setup',
-      );
-
-      expect(
-        yield* rootCommand({
-          node: "/opt/t3/t3",
-          entry: "/opt/t3/t3",
-          executable: true,
-        }),
-      ).toBe("sudo /opt/t3/t3 browser setup");
-
-      // A standalone executable started directly (systemd, no launcher) is still this install.
-      expect(
-        yield* rootCommand({
-          node: "/opt/t3/t3",
-          entry: "/opt/t3/t3",
-          executable: true,
-          path: yield* pathWithT3,
-        }),
-      ).toBe("sudo /opt/t3/t3 browser setup");
-
-      // A global npm launcher runs the downloaded executable; PATH's `t3` is that launcher.
-      const prefix = path.join(home, "npm");
-      const npmLauncher = path.join(prefix, "lib/node_modules/t3/bin/t3.mjs");
-      yield* fs.makeDirectory(path.dirname(npmLauncher), { recursive: true });
-      yield* fs.makeDirectory(path.join(prefix, "bin"));
-      yield* fs.writeFileString(npmLauncher, "", { mode: 0o755 });
+  it.effect("uses the standalone executable even when an npm launcher started it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const packageDir = path.join(root, "_npx/abc/node_modules/quixotic-cli");
+      const launcher = path.join(packageDir, "bin/t3.mjs");
+      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+      yield* fs.writeFileString(launcher, "");
       yield* fs.writeFileString(
-        path.join(prefix, "lib/node_modules/t3/package.json"),
-        `{"name":"t3","version":"${packageJson.version}"}`,
+        path.join(packageDir, "package.json"),
+        JSON.stringify({ name: "quixotic-cli", version: packageJson.version }),
       );
-      yield* fs.symlink(npmLauncher, path.join(prefix, "bin/t3"));
-      expect(
-        yield* rootCommand({
-          node: "/home/theo/.quixotic/runtime/versions/1.0.0/t3",
-          entry: "/home/theo/.quixotic/runtime/versions/1.0.0/t3",
-          executable: true,
-          path: path.join(prefix, "bin"),
-          env: { T3CODE_NPM_LAUNCHER_PATH: npmLauncher },
-        }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
+
+      const node = "/home/theo/.quixotic/runtime/versions/1.0.0/t3";
+      for (const env of [{}, { T3CODE_NPM_LAUNCHER_PATH: launcher }]) {
+        expect(
+          yield* rootCommand({
+            node,
+            entry: node,
+            executable: true,
+            env,
+            args: ["--base-dir", "/srv/quixotic home"],
+          }),
+        ).toBe(`sudo ${node} browser setup --base-dir '/srv/quixotic home'`);
+      }
 
       expect(
-        yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: path.join(home, "gone") } }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
+        yield* resolveHostCliCommand("doctor").pipe(
+          Effect.provideService(HostProcess.Arguments, [node, node]),
+          Effect.provideService(HostProcess.ExecutablePath, node),
+          Effect.provideService(HostProcess.IsExecutable, true),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, { T3CODE_NPM_LAUNCHER_PATH: launcher }),
+        ),
+      ).toEqual({ command: `${node} doctor`, launcher: false });
+    }),
+  );
+
+  it.effect("falls back to PATH only when there is no script or launcher", () =>
+    Effect.gen(function* () {
+      expect(yield* rootCommand({ node: "/usr/bin/node", entry: "" })).toBe(
+        "sudo quixotic-cli browser setup",
+      );
+      expect(yield* rootCommand({ node: "/opt/node/bin/node", entry: "" })).toBe(
+        'sudo env "PATH=$PATH" quixotic-cli browser setup',
+      );
     }),
   );
 });
@@ -172,7 +164,7 @@ it.layer(NodeServices.layer)("host CLI commands", (it) => {
         `& "${shim}" doctor "--base-dir" "C:\\Users\\Jane Doe\\.quixotic"`,
       );
       expect((yield* hostCommand("win32", {})).command).toBe(
-        't3 doctor "--base-dir" "C:\\Users\\Jane Doe\\.quixotic"',
+        'quixotic-cli doctor "--base-dir" "C:\\Users\\Jane Doe\\.quixotic"',
       );
       expect(
         (yield* resolveHostCliCommand("doctor", ["--base-dir", "C:\\T3\\\u201CArchive\u201D"]).pipe(
@@ -182,21 +174,39 @@ it.layer(NodeServices.layer)("host CLI commands", (it) => {
           Effect.provideService(HostProcess.Arguments, ["C:\\t3.exe", "C:\\bin.mjs"]),
           Effect.provideService(HostProcess.IsExecutable, false),
         )).command,
-      ).toBe('t3 doctor "--base-dir" "C:\\T3\\\u201C\u201CArchive\u201D\u201D"');
+      ).toBe('quixotic-cli doctor "--base-dir" "C:\\T3\\\u201C\u201CArchive\u201D\u201D"');
       expect((yield* hostCommand("linux", { T3CODE_CLI_PATH: shim })).command).toMatch(
         / doctor --base-dir 'C:\\Users\\Jane Doe\\\.quixotic'$/,
       );
     }),
   );
 
+  it.effect("runs a cached script with its local Node in PowerShell", () =>
+    Effect.gen(function* () {
+      const node = "C:\\Program Files\\nodejs\\node.exe";
+      const entry = "C:\\npm cache\\_npx\\abc\\node_modules\\quixotic-cli\\dist\\bin.mjs";
+      const command = yield* resolveHostCliCommand("doctor", ["$home"]).pipe(
+        Effect.provideService(HostProcess.ExecutablePath, node),
+        Effect.provideService(HostProcess.Arguments, [node, entry]),
+        Effect.provideService(HostProcess.IsExecutable, false),
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(HostProcess.Environment, {}),
+      );
+      expect(command).toEqual({
+        command: `& "${node}" "${entry}" doctor "\`$home"`,
+        launcher: false,
+      });
+    }),
+  );
+
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "names the absolute path of a t3 found through a relative PATH entry",
+    "names the absolute path of a quixotic-cli found through a relative PATH entry",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const bin = yield* fs.makeTempDirectoryScoped();
-        yield* fs.writeFileString(path.join(bin, "t3"), "#!/bin/sh\n", { mode: 0o755 });
+        yield* fs.writeFileString(path.join(bin, "quixotic-cli"), "#!/bin/sh\n", { mode: 0o755 });
         const hostCommand = (searchPath: string) =>
           resolveHostCliCommand("doctor").pipe(
             Effect.provideService(HostProcess.ExecutablePath, "/usr/bin/node"),
@@ -211,15 +221,18 @@ it.layer(NodeServices.layer)("host CLI commands", (it) => {
 
         // A relative entry was searched from this process's directory, unlike the user's shell.
         expect(yield* hostCommand(path.relative(process.cwd(), bin))).toEqual({
-          command: `${hostShellWord("linux", path.join(bin, "t3"))} doctor`,
+          command: `${hostShellWord("linux", path.join(bin, "quixotic-cli"))} doctor`,
           launcher: false,
         });
         // An empty entry makes the shell search its own directory first, wherever that is.
         expect(yield* hostCommand(`:${bin}`)).toEqual({
-          command: `${hostShellWord("linux", path.join(bin, "t3"))} doctor`,
+          command: `${hostShellWord("linux", path.join(bin, "quixotic-cli"))} doctor`,
           launcher: false,
         });
-        expect(yield* hostCommand(bin)).toEqual({ command: "t3 doctor", launcher: false });
+        expect(yield* hostCommand(bin)).toEqual({
+          command: "quixotic-cli doctor",
+          launcher: false,
+        });
       }),
   );
 });
@@ -234,17 +247,21 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
       yield* fs.writeFileString(executable, "");
       for (const [relative, kind] of [
+        ["npm/_npx/hash/node_modules/quixotic-cli/dist/bin.mjs", "npx"],
+        ["npm/_npx/hash/node_modules/quixotic-cli/bin/t3.mjs", "npx"],
         ["npm/_npx/hash/node_modules/t3/dist/bin.mjs", "npx"],
         ["npm/_npx/hash/node_modules/t3/bin/t3.mjs", "npx"],
-        ["pnpm/dlx/hash/node_modules/t3/dist/bin.mjs", "pnpm-dlx"],
-        [".bun/install/cache/t3/dist/bin.mjs", "bunx"],
+        ["pnpm/dlx/hash/node_modules/quixotic-cli/dist/bin.mjs", "pnpm-dlx"],
+        [".bun/install/cache/quixotic-cli/dist/bin.mjs", "bunx"],
       ] as const) {
         const entry = path.join(root, relative);
         yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
         yield* fs.writeFileString(entry, "");
+        const packageRoot = path.dirname(path.dirname(entry));
+        const name = path.basename(packageRoot);
         yield* fs.writeFileString(
-          path.join(path.dirname(entry), "../package.json"),
-          `{"name":"t3","version":"${packageJson.version}","bin":{"t3":"./bin/t3.mjs"}}`,
+          path.join(packageRoot, "package.json"),
+          JSON.stringify({ name, version: packageJson.version, bin: { [name]: "./bin/t3.mjs" } }),
         );
         const launchedBy = entry.endsWith("t3.mjs");
         const installation = yield* resolveServerInstallation.pipe(
@@ -267,15 +284,15 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
+      const packageRoot = path.join(prefix, "lib/node_modules/quixotic-cli");
       const entry = path.join(packageRoot, "dist/bin.mjs");
-      const globalBin = path.join(prefix, "bin/t3");
+      const globalBin = path.join(prefix, "bin/quixotic-cli");
       yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
       yield* fs.makeDirectory(path.dirname(globalBin), { recursive: true });
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
         path.join(packageRoot, "package.json"),
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        '{"name":"quixotic-cli","version":"0.0.45","bin":{"quixotic-cli":"./dist/bin.mjs"}}',
       );
       const resolve = resolveServerInstallation.pipe(
         Effect.provideService(HostProcess.Arguments, ["node", entry]),
@@ -292,7 +309,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
     }),
   );
 
-  it.effect("proves the downloaded executable was started by a global npm launcher", () =>
+  it.effect("recognizes a legacy global npm launcher only for the running version", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -365,14 +382,15 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
 
       // The script launcher execs the runtime by absolute path, so argv0 names the runtime.
       yield* fs.remove(launcher);
+      const script = path.join(root, "bin/quixotic-cli");
       yield* fs.writeFileString(
-        launcher,
+        script,
         posixLauncherScript(path.join(root, ".quixotic/runtime/versions/1.0.0/t3")),
         { mode: 0o755 },
       );
       expect(yield* resolve(executable, path.join(root, "bin"))).toEqual({
         kind: "t3-launcher",
-        launcher,
+        launcher: script,
         baseDir,
       });
     }),

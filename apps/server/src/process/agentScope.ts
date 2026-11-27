@@ -20,9 +20,10 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderProcesses from "./providerProcesses.ts";
 
-const AGENT_SLICE = "app-t3code-agents.slice";
+const AGENT_SCOPE_PREFIX = "quixotic-";
+const AGENT_SLICE = "app-quixotic-agents.slice";
 // Owns every agent slice and competes with the server's unit or scope under app.slice.
-const AGENTS_PARENT_SLICE = "app-t3code.slice";
+const AGENTS_PARENT_SLICE = "app-quixotic.slice";
 // Low weights yield CPU and disk to the server under contention, where the user manager
 // has those controllers: current systemd delegates cpu, rarely io. TasksMax keeps agents
 // below logind's 33% per-user task limit, leaving forks for the server.
@@ -30,7 +31,7 @@ const AGENTS_PARENT_PROPERTIES = ["CPUWeight=10", "IOWeight=10", "TasksMax=25%"]
 
 export function ownedAgentSlice(stateDir: string): string {
   const hash = NodeCrypto.createHash("sha256").update(stateDir).digest("hex").slice(0, 12);
-  return `app-t3code-agents-${hash}.slice`;
+  return `app-quixotic-agents-${hash}.slice`;
 }
 
 const GiB = 1024 ** 3;
@@ -171,6 +172,7 @@ export const make = Effect.gen(function* () {
           "--scope",
           "--quiet",
           "--collect",
+          `--unit=${AGENT_SCOPE_PREFIX}probe-${NodeCrypto.randomUUID().slice(0, 8)}.scope`,
           `--slice=${AGENT_SLICE}`,
           ...options,
           "--",
@@ -357,7 +359,7 @@ export const make = Effect.gen(function* () {
   );
 
   const stop = Effect.fn("AgentScope.stop")(function* (unit: string) {
-    if (!unit.startsWith("t3code-") || !unit.endsWith(".scope")) return;
+    if (!unit.startsWith(AGENT_SCOPE_PREFIX) || !unit.endsWith(".scope")) return;
     const scope = yield* systemd;
     if (scope === undefined) return;
     const state = yield* readScope(scope.systemctl, unit);
@@ -437,7 +439,7 @@ export const make = Effect.gen(function* () {
       const scope = yield* systemd;
       if (scope === undefined) return agentScopeCommand({ command: resolved, args });
       yield* scope.applyMemoryLimits;
-      const unit = `t3code-${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
+      const unit = `${AGENT_SCOPE_PREFIX}${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
       // A continuing shared scope cannot attribute a tool's OOM to one thread.
       // Clear the launch thread's previous scope instead.
       const continuing = shared === true && scope.supportsOomPolicy;
@@ -455,6 +457,10 @@ export const make = Effect.gen(function* () {
           ...SCOPE_OPTIONS,
           ...(scope.supportsOomPolicy
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
+            : []),
+          // OOMPolicy handles kernel kills. oomd can still kill the entire shared app-server.
+          ...(continuing
+            ? ["--property=MemoryAccounting=yes", "--property=ManagedOOMPreference=avoid"]
             : []),
           ...(owned ? [] : ["--collect"]),
         ],

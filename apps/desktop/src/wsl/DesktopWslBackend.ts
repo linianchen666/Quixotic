@@ -128,7 +128,7 @@ export const layer = Layer.effect(
                 Ref.set(
                   preflightErrorRef,
                   Option.some(
-                    "Another T3 Code server is using this distro's T3 home, or an older background service is set up for it. Stop that server or pair with it, or try `t3 update` in the distro. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI in the distro. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command.",
+                    "Another Quixotic server is using this distro's Quixotic data directory, or an older background service is set up for it. Stop that server or pair with it, or try `quixotic-cli update` in the distro. If the older launcher cannot update, run `quixotic-cli service uninstall` and optionally reinstall with `quixotic-cli service install` from a current CLI in the distro. If `quixotic-cli` is missing or outdated, install the standalone Linux CLI in the distro or run the CLI from a source checkout, and pass `--base-dir` with the service's Quixotic data directory to each command.",
                   ),
                 ),
               ),

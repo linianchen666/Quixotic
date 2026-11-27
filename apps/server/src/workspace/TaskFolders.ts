@@ -195,7 +195,7 @@ export class TaskFolders extends Context.Service<
       readonly recreate: (checkout: TaskFolderCheckout) => Effect.Effect<void, E>;
     }) => Effect.Effect<void, TaskFolderError | E>;
   }
->()("t3/workspace/TaskFolders") {}
+>()("quixotic-cli/workspace/TaskFolders") {}
 
 const isTaskFolderError = Schema.is(TaskFolderError);
 
@@ -328,29 +328,37 @@ const make = Effect.gen(function* () {
     branch: string,
     baseBranch: string | undefined,
     repositories: ReadonlyArray<string>,
+    shouldRun: Effect.Effect<boolean, TaskFolderError> = Effect.succeed(true),
   ) =>
     layoutLocks.withLock(
       taskFolder.projectRoot,
-      processes
-        .run({
-          operation: "TaskFolders.worktreeLayout",
-          command: onWindows ? windowsSystem32Path(hostEnvironment, "cmd.exe") : "sh",
-          args: onWindows ? ["/d", "/s", "/c", command] : ["-c", command],
-          cwd: taskFolder.projectRoot,
-          env: {
-            ...hostEnvironment,
-            // A `GIT_DIR` the server inherited would point the command's Git at another repository.
-            ...VcsProcess.unsetInheritedRepositoryEnv(hostEnvironment, hostPlatform),
-            T3_PROJECT_ROOT: taskFolder.projectRoot,
-            T3_WORKTREE_ROOT: taskFolder.root,
-            T3_WORKTREE_PROJECT_PATH: taskFolder.projectPath,
-            T3_WORKTREE_BRANCH: branch,
-            T3_WORKTREE_BASE: baseBranch ?? "",
-            T3_WORKTREE_REPOSITORIES: repositories.join("\n"),
-          },
-          timeoutMs: LAYOUT_COMMAND_TIMEOUT_MS,
-        })
-        .pipe(Effect.mapError(fail(operation, "The project's worktree layout command failed"))),
+      Effect.flatMap(shouldRun, (allowed) =>
+        allowed
+          ? processes
+              .run({
+                operation: "TaskFolders.worktreeLayout",
+                command: onWindows ? windowsSystem32Path(hostEnvironment, "cmd.exe") : "sh",
+                args: onWindows ? ["/d", "/s", "/c", command] : ["-c", command],
+                cwd: taskFolder.projectRoot,
+                env: {
+                  ...hostEnvironment,
+                  // A `GIT_DIR` the server inherited would point the command's Git at another repository.
+                  ...VcsProcess.unsetInheritedRepositoryEnv(hostEnvironment, hostPlatform),
+                  T3_PROJECT_ROOT: taskFolder.projectRoot,
+                  T3_WORKTREE_ROOT: taskFolder.root,
+                  T3_WORKTREE_PROJECT_PATH: taskFolder.projectPath,
+                  T3_WORKTREE_BRANCH: branch,
+                  T3_WORKTREE_BASE: baseBranch ?? "",
+                  T3_WORKTREE_REPOSITORIES: repositories.join("\n"),
+                },
+                timeoutMs: LAYOUT_COMMAND_TIMEOUT_MS,
+              })
+              .pipe(
+                Effect.mapError(fail(operation, "The project's worktree layout command failed")),
+                Effect.asVoid,
+              )
+          : Effect.void,
+      ),
     );
 
   /** Where a folder's `.git` file points, or null when `.git` is a directory or absent. */
@@ -761,14 +769,14 @@ const make = Effect.gen(function* () {
           ? [{ worktreePath: taskFolder.projectPath, repositoryPath: taskFolder.projectRoot }]
           : []),
       ];
-      let allGo = true;
-      for (const checkout of checkouts) {
-        if (!(yield* exists(checkout.worktreePath))) continue;
-        if ((yield* verdict(checkout)).keep === null) continue;
-        allGo = false;
-        break;
-      }
-      if (allGo) {
+      const allGo = Effect.gen(function* () {
+        for (const checkout of checkouts) {
+          if (!(yield* exists(checkout.worktreePath))) continue;
+          if ((yield* verdict(checkout)).keep !== null) return false;
+        }
+        return true;
+      });
+      if (yield* allGo) {
         yield* runLayoutCommand(
           "remove",
           layout.remove,
@@ -776,6 +784,11 @@ const make = Effect.gen(function* () {
           input.deleteBranch ?? "",
           undefined,
           taskFolder.repositories.map((repository) => repository.repositoryPath),
+          // Other work can arrive while this command waits for the project's layout lock.
+          Effect.suspend(() => {
+            verdicts.clear();
+            return allGo;
+          }),
         ).pipe(Effect.ignoreCause({ log: true }));
         // The command took its time: what it left is looked at again before it is removed.
         verdicts.clear();

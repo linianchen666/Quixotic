@@ -115,6 +115,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           mode === "web" ? undefined : "desktop-managed",
         );
         expect(descriptor.capabilities).toMatchObject({
+          npmReleaseLookup: false,
           settledWorktreeCleanup: true,
           storageCleanupRun: true,
           projectWorktreeCleanup: true,

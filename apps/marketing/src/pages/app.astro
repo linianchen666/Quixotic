@@ -1,0 +1,9 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { INSTALL_GUIDE_URL } from "../lib/site";
+---
+<Layout title="Open Quixotic" description="Open the web app from your Quixotic server.">
+  <h1>Open Quixotic</h1>
+  <p>Run Quixotic on your own machine and open the address it prints. If another device hosts your server, open its pairing link.</p>
+  <div class="actions"><a href={INSTALL_GUIDE_URL}>Installation guide</a></div>
+</Layout>

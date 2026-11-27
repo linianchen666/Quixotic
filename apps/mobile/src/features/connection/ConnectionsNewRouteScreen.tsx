@@ -1,9 +1,7 @@
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { T, useGT } from "gt-react-native";
-import { ListRow } from "../../components/ui/ListRow";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { useAuth } from "@clerk/expo";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import {
@@ -27,11 +25,8 @@ import { FrostedCutout } from "../../components/ui/FrostedCutout";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { hasCloudPublicConfig } from "../cloud/publicConfig";
-import { CloudEnvironmentRows } from "./CloudEnvironmentRows";
 import { autoConnectReport, devAutoConnectAttemptAtom } from "./devAutoConnect";
 import { linkedEnvironmentPrefillAtom } from "./linkedEnvironmentPrefill";
-import { splitEnvironmentSections } from "./environmentSections";
 import { leaveSettingsPage } from "../settings/settings-navigation";
 import { workspaceHasColumns } from "../layout/workspace/workspace-selection-store";
 import { m } from "../../i18n/messages";
@@ -41,7 +36,7 @@ type ConnectionsNewRouteParams = {
   readonly pairingUrl?: string;
   readonly autoConnect?: string;
   readonly routeFor?: EnvironmentId;
-  /** A linked machine this app chose to pair with; its details come from app state, never the link. */
+  /** A linked machine this app chose to connect to; its details come from app state, never the link. */
   readonly linked?: string;
 };
 
@@ -74,13 +69,18 @@ function PairingForm({
   readonly linked: { readonly label: string; readonly host: string | null } | null;
 }) {
   const gt = useGT();
-  const { connectionPairingUrl, onChangeConnectionPairingUrl, onConnectPress } =
-    useRemoteConnections();
+  const {
+    connectionPairingUrl,
+    onChangeConnectionPairingUrl,
+    onConnectGatewayOrEasyTier,
+    onConnectPress,
+  } = useRemoteConnections();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const [initialPairing] = useState(() => parsePairingUrl(routePairingUrl || connectionPairingUrl));
   const [hostInput, setHostInput] = useState(linked?.host ?? initialPairing.host);
-  const [codeInput, setCodeInput] = useState(initialPairing.code);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [scannedPairingCode, setScannedPairingCode] = useState(initialPairing.code);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   // The user's own edit or submit dismisses the dev auto-connect report.
@@ -111,15 +111,18 @@ function PairingForm({
     const pairing = parsePairingUrl(value);
     if (pairing.code) {
       setHostInput(pairing.host);
-      setCodeInput(pairing.code);
+      setScannedPairingCode(pairing.code);
+      setPasswordInput("");
     } else {
       setHostInput(value);
+      setScannedPairingCode("");
     }
     clearError();
   };
 
-  const handleCodeChange = (value: string) => {
-    setCodeInput(value);
+  const handlePasswordChange = (value: string) => {
+    setPasswordInput(value);
+    setScannedPairingCode("");
     clearError();
   };
 
@@ -151,7 +154,8 @@ function PairingForm({
       const pairingUrl = extractPairingUrlFromQrPayload(data);
       const { host, code } = parsePairingUrl(pairingUrl);
       setHostInput(host);
-      setCodeInput(code);
+      setScannedPairingCode(code);
+      setPasswordInput("");
       onChangeConnectionPairingUrl(pairingUrl);
       setScanComplete(true);
       setScannerLocked(false);
@@ -170,12 +174,24 @@ function PairingForm({
   };
 
   const handleSubmit = async () => {
-    const pairingUrl = buildPairingUrl(hostInput, codeInput);
     setOwnAttempt(true);
     setSubmitError(null);
     setIsSubmitting(true);
-    onChangeConnectionPairingUrl(pairingUrl);
-    const outcome = await onConnectPress(pairingUrl, routeFor);
+
+    const trimmedCode = scannedPairingCode.trim();
+    const outcome =
+      trimmedCode.length > 0
+        ? await (() => {
+            const pairingUrl = buildPairingUrl(hostInput, trimmedCode);
+            onChangeConnectionPairingUrl(pairingUrl);
+            return onConnectPress(pairingUrl, routeFor);
+          })()
+        : await onConnectGatewayOrEasyTier({
+            host: hostInput.trim(),
+            ...(passwordInput.trim().length > 0 ? { password: passwordInput.trim() } : {}),
+            ...(routeFor === undefined ? {} : { expectedEnvironmentId: routeFor }),
+          });
+
     setIsSubmitting(false);
     setSubmitError(outcome.error);
     void Haptics.notificationAsync(
@@ -199,13 +215,13 @@ function PairingForm({
       title={
         linked
           ? gt("Connect to {environment}", { environment: linked.label })
-          : gt("Add environment")
+          : gt("Connect Gateway / EasyTier")
       }
       actions={[
         {
           accessibilityLabel: connecting
             ? gt("Connecting", { $context: "connection status" })
-            : gt("Add environment"),
+            : gt("Connect"),
           loading: connecting,
           icon: "checkmark",
           tintColor: headerIconColor,
@@ -229,17 +245,9 @@ function PairingForm({
         }}
       >
         <View collapsable={false} className="gap-6.5">
-          <PairingScanCard
-            cameraActive={cameraPermission?.granted === true && screenFocused && !scanComplete}
-            onScan={handleQrScan}
-            onScanPress={() => {
-              void handleScanPress();
-            }}
-          />
-
           <View collapsable={false} className="gap-2">
             <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
-              <T>Or enter it</T>
+              <T>Public Gateway or EasyTier node</T>
             </Text>
             <View
               collapsable={false}
@@ -251,17 +259,18 @@ function PairingForm({
               <PairingInputRow
                 label={gt("Address")}
                 keyboardType="url"
-                placeholder="192.168.1.100:3773"
+                placeholder="203.0.113.10:3773"
                 value={hostInput}
                 onChangeText={handleHostChange}
               />
               <View className="ml-4 border-t border-border-subtle" />
               <PairingInputRow
-                label={gt("Code", { $context: "pairing code field" })}
-                placeholder={gt("Pairing code")}
+                label={gt("Password")}
+                secureTextEntry
+                placeholder={gt("Gateway password (blank for EasyTier)")}
                 returnKeyType="go"
-                value={codeInput}
-                onChangeText={handleCodeChange}
+                value={passwordInput}
+                onChangeText={handlePasswordChange}
                 onSubmitEditing={() => {
                   if (!connectDisabled) void handleSubmit();
                 }}
@@ -275,18 +284,19 @@ function PairingForm({
               )}
             >
               {pairingConnectionError ??
-                (linked
-                  ? gt(
-                      "Create a pairing code on {environment}, in its Settings → Sharing & access or with `t3 auth pairing create`, and enter it here.",
-                      { environment: linked.label },
-                    )
-                  : gt(
-                      "For machines on your local network or tailnet. The machine keeps its own provider credentials.",
-                    ))}
+                gt(
+                  "Sign in to your Public Gateway once to automatically discover and control every EasyTier machine behind it, with no EasyTier needed on your phone.",
+                )}
             </Text>
           </View>
 
-          {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          <PairingScanCard
+            cameraActive={cameraPermission?.granted === true && screenFocused && !scanComplete}
+            onScan={handleQrScan}
+            onScanPress={() => {
+              void handleScanPress();
+            }}
+          />
         </View>
       </ScrollView>
     </SettingsScreen>
@@ -385,41 +395,6 @@ function PairingScanCard(props: {
         </Text>
       </View>
     </Pressable>
-  );
-}
-
-function T3ConnectSection() {
-  const gt = useGT();
-  const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
-  const navigation = useNavigation();
-  const { connectedEnvironments, onSetEnvironmentEnabled, onRemoveEnvironmentPress } =
-    useRemoteConnections();
-  const { connectedCloudEnvironments } = splitEnvironmentSections({
-    connectedEnvironments,
-    cloudEnvironments: null,
-  });
-
-  return (
-    <View collapsable={false} className="gap-2">
-      <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
-        <T>Or use the managed relay</T>
-      </Text>
-      {isSignedIn ? (
-        <CloudEnvironmentRows
-          connectedCloudEnvironments={connectedCloudEnvironments}
-          onSetEnvironmentEnabled={onSetEnvironmentEnabled}
-          onRemoveEnvironment={onRemoveEnvironmentPress}
-          showHeader={false}
-        />
-      ) : (
-        <ListRow
-          label={gt("Sign in to {product}", { product: "T3 Connect" })}
-          description={gt("Reach your machines from anywhere, no network setup.")}
-          disabled={!isLoaded}
-          onPress={() => navigation.navigate("SettingsAuth")}
-        />
-      )}
-    </View>
   );
 }
 

@@ -324,6 +324,20 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
 
   const bootstrapCredential = urlCredential ?? getDesktopBootstrapCredential();
   if (!bootstrapCredential) {
+    // Direct EasyTier mesh peers auto-authenticate with zero pairing.
+    if (currentSession.easyTierDirectPeer === true) {
+      try {
+        await runPrimaryHttp(
+          PrimaryEnvironmentHttpClient.pipe(
+            Effect.flatMap((client) => client.easytier.meshBrowserSession({ payload: {} })),
+          ),
+        );
+        await waitForAuthenticatedSessionAfterBootstrap();
+        return { status: "authenticated" };
+      } catch {
+        // Fall through to auth prompt if automatic mesh sign-in fails.
+      }
+    }
     return {
       status: "requires-auth",
       auth: currentSession.auth,

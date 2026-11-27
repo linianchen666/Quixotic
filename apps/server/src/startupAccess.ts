@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 
 import {
   formatHostForUrl,
+  isBenchmarkOrProxyTunIpv4,
+  isEasyTierInterfaceName,
   isPrivateNetworkHost,
   isSharedAddressSpaceHost,
   isWildcardHost,
@@ -70,7 +72,12 @@ export const isVirtualInterface = (name: string, platform: NodeJS.Platform): boo
  */
 export const isPrivateNetworkAddress = (address: string): boolean => {
   const ipv4 = address.replace(/^::ffff:/i, "");
-  return NodeNet.isIPv4(ipv4) && !ipv4.startsWith("169.254.") && isPrivateNetworkHost(ipv4);
+  return (
+    NodeNet.isIPv4(ipv4) &&
+    !ipv4.startsWith("169.254.") &&
+    !isBenchmarkOrProxyTunIpv4(ipv4) &&
+    isPrivateNetworkHost(ipv4)
+  );
 };
 
 /**
@@ -161,32 +168,36 @@ const resolveHeadlessConnectionHost = (
   }
 
   const interfaceEntries = Object.entries(interfaces).flatMap(([name, entries]) =>
-    privateNetworkOnly && isVirtualInterface(name, platform) ? [] : (entries ?? []),
+    privateNetworkOnly && isVirtualInterface(name, platform)
+      ? []
+      : (entries ?? []).map((entry) => ({ name, entry })),
   );
   const externalIpv4Entries = interfaceEntries.filter(
-    (entry) =>
+    ({ entry }) =>
       !entry.internal &&
       isIpv4Family(entry.family) &&
+      !isBenchmarkOrProxyTunIpv4(entry.address) &&
       (!privateNetworkOnly ||
         (isPrivateNetworkAddress(entry.address) &&
           !(platform === "win32" && WINDOWS_HOST_ADAPTER_MAC.test(entry.mac)))),
   );
-  // A tailnet or other CGNAT address reaches fewer devices than the LAN one.
+  // Prefer EasyTier or LAN over legacy CGNAT/Tailscale.
   const externalIpv4 = privateNetworkOnly
-    ? (externalIpv4Entries.find((entry) => !isSharedAddressSpaceHost(entry.address)) ??
+    ? (externalIpv4Entries.find(({ name }) => isEasyTierInterfaceName(name)) ??
+      externalIpv4Entries.find(({ entry }) => !isSharedAddressSpaceHost(entry.address)) ??
       externalIpv4Entries[0])
     : externalIpv4Entries[0];
   if (externalIpv4) {
-    return externalIpv4.address;
+    return externalIpv4.entry.address;
   }
   if (privateNetworkOnly) {
     return loopbackAddressFor(host);
   }
 
   const externalIpv6 = interfaceEntries.find(
-    (entry) => !entry.internal && isIpv6Family(entry.family),
+    ({ entry }) => !entry.internal && isIpv6Family(entry.family),
   );
-  return externalIpv6 ? normalizeHost(externalIpv6.address) : loopbackAddressFor(host);
+  return externalIpv6 ? normalizeHost(externalIpv6.entry.address) : loopbackAddressFor(host);
 };
 
 export const resolveHeadlessConnectionString = (
@@ -251,7 +262,7 @@ export const renderTerminalQrCode = (value: string, margin = 2): string => {
 
 export const formatHeadlessServeOutput = (accessInfo: HeadlessServeAccessInfo): string =>
   [
-    "T3 Code server is ready.",
+    "Quixotic server is ready.",
     `Connection string: ${accessInfo.connectionString}`,
     `Token: ${accessInfo.token}`,
     `Pairing URL: ${accessInfo.pairingUrl}`,

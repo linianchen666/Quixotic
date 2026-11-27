@@ -8,6 +8,8 @@ import {
 } from "@t3tools/contracts";
 import { codexCallbackUrl } from "@t3tools/shared/codexAuthHandoff";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
+import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Signature from "effect/crypto/Signature";
@@ -427,8 +429,13 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     const state = yield* randomToken(32);
     const nonce = yield* randomToken(32);
     const verifier = yield* randomToken(64);
+    const hostedAppOrigin = yield* Config.option(hostedAppUrlConfig).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.orElseSucceed(() => undefined),
+    );
     const returnUrl =
-      codexAuthReturnUrl(context.returnUrl) ?? codexAuthReturnUrl(options.defaultReturnUrl);
+      codexAuthReturnUrl(context.returnUrl, hostedAppOrigin) ??
+      codexAuthReturnUrl(options.defaultReturnUrl, hostedAppOrigin);
     const pageNonce = yield* randomToken(24);
     const callback = Promise.withResolvers<{ url: URL; response?: NodeHttp.ServerResponse }>();
     const clientCallback = context.callbackMode === "client";
@@ -503,7 +510,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
               ? { prompt: "consent" }
               : {}),
           }
-        : { agent_name_hint: "T3 Code" }),
+        : { agent_name_hint: "Quixotic" }),
       ext_agent_host_id: hostId,
       response_type: "code",
       redirect_uri: redirectUri,
@@ -691,7 +698,15 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
                   "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${pageNonce}'; base-uri 'none'; frame-ancestors 'none'`,
                   "x-content-type-options": "nosniff",
                 })
-                .end(codexAuthCallbackPage(Exit.isSuccess(result), returnUrl, pageNonce), resolve);
+                .end(
+                  codexAuthCallbackPage(
+                    Exit.isSuccess(result),
+                    returnUrl,
+                    pageNonce,
+                    hostedAppOrigin,
+                  ),
+                  resolve,
+                );
             }),
         ),
       ),

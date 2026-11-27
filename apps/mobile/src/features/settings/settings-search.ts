@@ -155,8 +155,6 @@ const SETTINGS_SEARCH_TERMS = {
   ],
   SettingsLabs: [
     msg("beta", { $context: "settings search keyword" }),
-    msg("linked environments", { $context: "settings search keyword" }),
-    msg("link machine", { $context: "settings search keyword" }),
     msg("fast worktree checkout", { $context: "settings search keyword" }),
     msg("clone cache", { $context: "settings search keyword" }),
     msg("agent feedback", { $context: "settings search keyword" }),

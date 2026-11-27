@@ -87,6 +87,75 @@ export const isTailnetHost = (host: string): boolean => {
   return ipv6 !== null && ipv6PrefixMatches(ipv6, [0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0], 48);
 };
 
+export const isBenchmarkOrProxyTunIpv4 = (host: string): boolean => {
+  const parts = parseIpv4Address(host) ?? parseIpv4MappedIpv6Address(host);
+  return parts !== null && parts[0] === 198 && (parts[1] === 18 || parts[1] === 19);
+};
+
+export const normalizeIpv4Address = (host: string): string | null => {
+  const parts = parseIpv4Address(host) ?? parseIpv4MappedIpv6Address(host);
+  return parts === null ? null : parts.join(".");
+};
+
+export const ipv4ToUint32 = (host: string): number | null => {
+  const parts = parseIpv4Address(host) ?? parseIpv4MappedIpv6Address(host);
+  if (parts === null) return null;
+  return (((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>> 0);
+};
+
+export const uint32ToIpv4 = (value: number): string =>
+  [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff].join(".");
+
+export interface ParsedIpv4Cidr {
+  readonly network: number;
+  readonly prefixLength: number;
+  readonly mask: number;
+  readonly cidr: string;
+}
+
+export const parseIpv4Cidr = (raw: string): ParsedIpv4Cidr | null => {
+  const trimmed = raw.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0 || slashIndex !== trimmed.lastIndexOf("/")) return null;
+  const ipPart = trimmed.slice(0, slashIndex).trim();
+  const prefixPart = trimmed.slice(slashIndex + 1).trim();
+  if (!/^\d{1,2}$/u.test(prefixPart)) return null;
+  const prefixLength = Number.parseInt(prefixPart, 10);
+  if (!Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > 32) return null;
+  const ipInt = ipv4ToUint32(ipPart);
+  if (ipInt === null) return null;
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  const network = (ipInt & mask) >>> 0;
+  return {
+    network,
+    prefixLength,
+    mask,
+    cidr: `${uint32ToIpv4(network)}/${prefixLength}`,
+  };
+};
+
+export const isIpv4InCidr = (host: string, cidr: string): boolean => {
+  const parsed = parseIpv4Cidr(cidr);
+  if (parsed === null) return false;
+  const ipInt = ipv4ToUint32(host);
+  if (ipInt === null) return false;
+  return ((ipInt & parsed.mask) >>> 0) === parsed.network;
+};
+
+export const isRfc1918Ipv4 = (host: string): boolean => {
+  const parts = parseIpv4Address(host) ?? parseIpv4MappedIpv6Address(host);
+  if (parts === null) return false;
+  return (
+    parts[0] === 10 ||
+    (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
+    (parts[0] === 192 && parts[1] === 168)
+  );
+};
+
+/** Common EasyTier virtual TUN adapter names across Linux, macOS, and Windows (including Windows `et_*` Wintun names). */
+export const isEasyTierInterfaceName = (name: string): boolean =>
+  /^(?:tun\d*|utun\d*|easytier.*|et(?:[\d_-].*)?|wintun.*)$/i.test(name.trim());
+
 export const isSharedAddressSpaceHost = (host: string): boolean => {
   const parts = parseIpv4Address(host);
   return parts !== null && parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127;

@@ -404,6 +404,13 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  const runSync = Effect.runSyncWith(context);
+  let tray: Electron.Tray | undefined;
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      if (tray && !tray.isDestroyed()) tray.destroy();
+    }),
+  );
   const mainWindowMutex = yield* Semaphore.make(1);
   const pendingMainReveals = new WeakMap<Electron.BrowserWindow, Effect.Effect<void>>();
   const revealMain = Effect.fn("desktop.window.revealMain")((window: Electron.BrowserWindow) =>
@@ -867,8 +874,39 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
       runFork(flushBoundsPersist);
+      if (
+        (environment.platform !== "win32" && environment.platform !== "linux") ||
+        runSync(Ref.get(desktopState.quitting))
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      const icon = iconOption.icon;
+      if (tray === undefined && icon !== undefined) {
+        const showWindow = () => {
+          runFork(activate.pipe(Effect.ignoreCause));
+        };
+        let created: Electron.Tray | undefined;
+        try {
+          const menu = Electron.Menu.buildFromTemplate([
+            { label: m(msg("Show Main Window")), click: showWindow },
+            { label: m(msg("Quit {appName}"), { appName: environment.displayName }), role: "quit" },
+          ]);
+          created = new Electron.Tray(icon);
+          created.setToolTip(environment.displayName);
+          created.setContextMenu(menu);
+          created.on("click", showWindow);
+          tray = created;
+        } catch (cause) {
+          created?.destroy();
+          runFork(logWindowWarning("could not create the system tray icon", { cause }));
+        }
+      }
+      if (tray) window.hide();
+      else window.minimize();
     });
 
     if (environment.platform === "darwin") {
@@ -1196,6 +1234,28 @@ export const make = Effect.gen(function* () {
     yield* dispatch;
   });
 
+  const activate = Effect.gen(function* () {
+    if (yield* Ref.get(desktopState.quitting)) return;
+    const existingWindow = yield* currentMainWindow;
+    if (Option.isSome(existingWindow)) {
+      yield* revealMain(existingWindow.value);
+      return;
+    }
+    if (mainClosedDuringStartup) {
+      yield* ensureMain;
+      return;
+    }
+    const backendReady = yield* Ref.get(backendReadyRef);
+    if (!backendReady) {
+      const splash = yield* Ref.get(splashWindowRef);
+      if (Option.isSome(splash)) {
+        yield* electronWindow.reveal(splash.value);
+        return;
+      }
+    }
+    yield* createMainIfBackendReady;
+  }).pipe(Effect.withSpan("desktop.window.activate"));
+
   return DesktopWindow.of({
     createMain: createMain.pipe(Effect.flatMap(requireWindow)),
     ensureMain: ensureMain.pipe(Effect.flatMap(requireWindow)),
@@ -1206,27 +1266,7 @@ export const make = Effect.gen(function* () {
         yield* electronWindow.prepareReveal(existingWindow.value);
       }
     }),
-    activate: Effect.gen(function* () {
-      if (yield* Ref.get(desktopState.quitting)) return;
-      const existingWindow = yield* currentMainWindow;
-      if (Option.isSome(existingWindow)) {
-        yield* revealMain(existingWindow.value);
-        return;
-      }
-      if (mainClosedDuringStartup) {
-        yield* ensureMain;
-        return;
-      }
-      const backendReady = yield* Ref.get(backendReadyRef);
-      if (!backendReady) {
-        const splash = yield* Ref.get(splashWindowRef);
-        if (Option.isSome(splash)) {
-          yield* electronWindow.reveal(splash.value);
-          return;
-        }
-      }
-      yield* createMainIfBackendReady;
-    }).pipe(Effect.withSpan("desktop.window.activate")),
+    activate,
     createMainIfBackendReady,
     showConnectingSplash,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {

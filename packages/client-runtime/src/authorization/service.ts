@@ -166,9 +166,11 @@ const fetchDescriptor = Effect.fn("clientRuntime.connection.remote.fetchDescript
   httpBaseUrl: string,
   connectionMethod: ClientConnectionMethod,
   timeoutMs?: number,
+  bearerToken?: string,
 ) {
   return yield* fetchRemoteEnvironmentDescriptor({
     httpBaseUrl,
+    ...(bearerToken === undefined ? {} : { bearerToken }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   }).pipe(Effect.mapError((error) => mapRemoteEnvironmentError(error, connectionMethod)));
 });
@@ -215,9 +217,11 @@ export const make = Effect.gen(function* () {
       readonly expectedEnvironmentId: EnvironmentId;
       readonly httpBaseUrl: string;
       readonly connectionMethod: ClientConnectionMethod;
+      readonly bearerToken?: string;
     }) {
       const checked = checkedDescriptors.get(input.httpBaseUrl);
       checkedDescriptors.delete(input.httpBaseUrl);
+      const isGatewayProxyPath = input.httpBaseUrl.includes("/mesh/");
       // A remembered mismatch still reads again, so a host that answers for the
       // right environment a moment later is not blocked.
       const descriptor =
@@ -232,6 +236,7 @@ export const make = Effect.gen(function* () {
               input.connectionMethod === "direct" && isNearbyAddress(input.httpBaseUrl)
                 ? NEARBY_DESCRIPTOR_TIMEOUT_MS
                 : undefined,
+              isGatewayProxyPath ? input.bearerToken : undefined,
             ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
       if (descriptor.environmentId !== input.expectedEnvironmentId) {
         return yield* environmentMismatchError({
@@ -320,7 +325,7 @@ export const make = Effect.gen(function* () {
   const sessionPending = () =>
     new ConnectionTransientError({
       reason: "session-pending",
-      ...translatableDetail(msg("Waiting for the T3 Connect sign-in to load.")),
+      ...translatableDetail(msg("Waiting for the self-hosted relay sign-in to load.")),
     });
 
   const assertSession = Effect.fnUntraced(function* (
@@ -726,7 +731,7 @@ export const make = Effect.gen(function* () {
         return yield* mapDpopSocketError(cachedSocket.failure);
       }
       // An unreachable direct address says nothing about the token, so keep
-      // it for the T3 Connect route rather than forcing a relay round trip.
+      // it for the self-hosted relay route rather than forcing a relay round trip.
       if (endpoint !== undefined && cachedSocket.failure._tag !== "EnvironmentAuthInvalidError") {
         return yield* mapDpopSocketError(cachedSocket.failure);
       }
@@ -783,7 +788,7 @@ export const make = Effect.gen(function* () {
       const direct = input.directConnection;
       let expiresAtEpochMs = input.expiresAtEpochMs;
       let now = yield* Clock.currentTimeMillis;
-      // Past expiry the server has closed a T3 Connect socket. A direct socket stays open for
+      // Past expiry the server has closed a self-hosted relay socket. A direct socket stays open for
       // its session's whole renewal window, so it keeps retrying until a blocked credential.
       while (direct !== undefined || now < expiresAtEpochMs) {
         // getDpopToken reuses a cached token until it is within the skew of expiry.

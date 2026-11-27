@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 18.4.0",
-    "appVersionSource": "remote",
+    "appVersionSource": "local",
     "promptToConfigurePushNotifications": false
   },
   "build": {
@@ -56,18 +56,12 @@
         "image": "macos-tahoe-26.6-xcode-27.1"
       }
     },
-    "testflight": {
-      "extends": "production",
-      "env": {
-        "T3CODE_MOBILE_VERSION": "3.0.0"
-      }
-    },
     "production": {
       "corepack": true,
       "env": {
         "APP_VARIANT": "production",
         "NODE_OPTIONS": "--max-old-space-size=4096",
-        "SOURCEMAP_FILE": "/tmp/t3code-ios-main.jsbundle.map",
+        "SOURCEMAP_FILE": "/tmp/quixotic-ios-main.jsbundle.map",
         "ORG_GRADLE_PROJECT_reactNativeArchitectures": "armeabi-v7a,arm64-v8a"
       },
       "channel": "production",
@@ -78,19 +72,6 @@
       },
       "ios": {
         "image": "macos-tahoe-26.6-xcode-27.1"
-      }
-    }
-  },
-  "submit": {
-    "testflight": {
-      "extends": "production"
-    },
-    "production": {
-      "ios": {
-        "ascAppId": "6787819824"
-      },
-      "android": {
-        "track": "internal"
       }
     }
   }

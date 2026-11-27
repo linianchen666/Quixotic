@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
 
+import { resolveRpcSocketUrl } from "@t3tools/shared/advertisedEndpoint";
 import { appendClientConnectionParams } from "../authorization/remote.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
@@ -73,13 +74,10 @@ const isSshProfile = Schema.is(SshConnectionProfile);
 const isBearerCredential = Schema.is(BearerConnectionCredential);
 
 function primarySocketUrl(
-  target: PrimaryConnectionTarget,
+  target: Pick<PrimaryConnectionTarget, "wsBaseUrl">,
   clientMetadata: AuthClientPresentationMetadata | undefined,
 ): string {
-  const url = new URL(target.wsBaseUrl);
-  if (url.pathname === "" || url.pathname === "/") {
-    url.pathname = "/ws";
-  }
+  const url = resolveRpcSocketUrl(target.wsBaseUrl);
   appendClientConnectionParams(url, clientMetadata, "direct");
   return url.toString();
 }
@@ -120,6 +118,7 @@ const makePrimaryBroker = Effect.fn("clientRuntime.connection.broker.makePrimary
 
 const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")(function* () {
   const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
+  const presentation = yield* ClientCapabilities.ClientPresentation;
   const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
   return Effect.fn("clientRuntime.connection.broker.bearer")(function* (
@@ -144,6 +143,16 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
         expected: target.environmentId,
         actual: profile.environmentId,
       });
+    }
+    if (profile.authorization === "cookie") {
+      return {
+        environmentId: target.environmentId,
+        label: target.label,
+        httpBaseUrl: profile.httpBaseUrl,
+        socketUrl: primarySocketUrl({ wsBaseUrl: profile.wsBaseUrl }, presentation.metadata),
+        httpAuthorization: null,
+        target,
+      } satisfies PreparedConnection;
     }
     if (profile.authorization === "t3-connect") {
       const authorized = yield* remote.authorizeDpop({

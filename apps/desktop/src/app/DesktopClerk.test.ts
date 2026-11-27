@@ -60,10 +60,12 @@ const layerDesktopClerk = (
   }),
   shell: ElectronShell.ElectronShell["Service"] = {
     openExternal: () => Effect.succeed(true),
+    openPath: () => Effect.succeed(false),
     openSystemSettings: () => Effect.succeed(false),
     copyText: () => Effect.void,
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
+  hostedAppOrigin?: string,
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: clerkStateDir,
@@ -104,6 +106,7 @@ const layerDesktopClerk = (
         Layer.succeed(DesktopEnvironment.DesktopEnvironment, environment),
         Layer.succeed(ElectronApp.ElectronApp, electronApp),
         Layer.succeed(ElectronShell.ElectronShell, shell),
+        Layer.succeed(HostProcess.Environment, { T3CODE_HOSTED_APP_URL: hostedAppOrigin }),
         fileSystemLayer,
       ),
     ),
@@ -366,7 +369,7 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
       }).toString();
       const request = {
         authorizationUrl: authorize.toString(),
-        returnUrl: "https://app.t3.codes/welcome#agents:remote-one",
+        returnUrl: "https://quixotic.example.com/welcome#agents:remote-one",
         environmentId: EnvironmentId.make("remote-one"),
         instanceId: ProviderInstanceId.make("work"),
         flowId: "flow-one",
@@ -387,6 +390,7 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
             delivered.resolve(response.headers.get("location")!);
             return true;
           }),
+        openPath: () => Effect.succeed(false),
         openSystemSettings: () => Effect.succeed(false),
         copyText: () => Effect.void,
       });
@@ -409,13 +413,23 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
           listeners.get("open-url")!(event, link);
           assert.strictEqual(event.preventDefault.mock.calls.length, 1);
         }
-        const delivery = readCodexAuthDelivery(yield* Effect.promise(() => delivered.promise));
+        const delivery = readCodexAuthDelivery(yield* Effect.promise(() => delivered.promise), "https://quixotic.example.com");
         assert.strictEqual(delivery?.environmentId, request.environmentId);
         assert.strictEqual(delivery?.instanceId, request.instanceId);
         assert.strictEqual(delivery?.flowId, request.flowId);
         assert.strictEqual(delivery?.returnUrl, request.returnUrl);
       }).pipe(
-        Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, shell, listeners)),
+        Effect.provide(
+          layerDesktopClerk(
+            true,
+            [],
+            "darwin",
+            undefined,
+            shell,
+            listeners,
+            "https://quixotic.example.com",
+          ),
+        ),
         Effect.provideService(HostProcess.Arguments, entry === "startup" ? ["t3", link] : ["t3"]),
         Effect.provideService(ElectronApp.ElectronApp, electronApp),
         Effect.provideService(

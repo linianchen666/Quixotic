@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { cliArchiveStem } from "./build-cli-archive.ts";
 
 import {
   buildDesktopBundles,
@@ -140,6 +141,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   readonly serverEntrySource?: string;
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
+  readonly legacyWslArchive?: boolean;
   readonly ptyPrebuildArch?: "x64" | "arm64";
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -178,7 +180,10 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   yield* fs.writeFileString(path.join(packagedAppDir, "chrome_crashpad_handler.exe"), "crashpad");
 
   if (input.wslRuntime !== undefined) {
-    const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, input.targetArch ?? "x64");
+    const arch = input.targetArch ?? "x64";
+    const stem = input.legacyWslArchive
+      ? `t3-${WINDOWS_PAYLOAD_FIXTURE_VERSION}-linux-${arch}`
+      : cliArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, "linux", arch);
     const sourceArchivePath =
       input.wslRuntime === "loose-server-tree"
         ? yield* makeLinuxCliArchiveFixture({
@@ -579,7 +584,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("keeps the upstream Windows installer GUID on Quixotic builds", () =>
+  it.effect("keeps the upstream Windows installer GUID and enables wizard directory selection on Quixotic builds", () =>
     Effect.gen(function* () {
       const win = yield* createBuildConfig(
         "win",
@@ -591,6 +596,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
       assert.nestedPropertyVal(win, "nsis.guid", "e9197887-efb3-55e0-985e-d6d3b5dd594a");
+      assert.nestedPropertyVal(win, "nsis.oneClick", false);
+      assert.nestedPropertyVal(win, "nsis.allowToChangeInstallationDirectory", true);
+      assert.nestedPropertyVal(win, "nsis.deleteAppDataOnUninstall", false);
       assert.propertyVal(win, "appId", "com.quixotic.app");
     }),
   );
@@ -1038,6 +1046,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           assert.equal(result.packagedAppDir, fixture.packagedAppDir);
         }),
       ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("accepts a matching legacy WSL archive from a local build", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          legacyWslArchive: true,
+        });
+        const result = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          expectWslRuntime: true,
+        });
+
+        assert.equal(result.packagedAppDir, fixture.packagedAppDir);
+      }),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each(["x64", "arm64"] as const)(

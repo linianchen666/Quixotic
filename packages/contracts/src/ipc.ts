@@ -529,6 +529,40 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   tailscaleServePort: Schema.Number,
 });
 
+export type DesktopDataDirectoryMode = "migrate" | "switch" | "reset";
+
+export const DesktopDataDirectoryModeSchema = Schema.Literals(["migrate", "switch", "reset"]);
+
+export const DesktopDataDirectoryStateSchema = Schema.Struct({
+  currentBaseDir: Schema.String,
+  defaultBaseDir: Schema.String,
+  isCustom: Schema.Boolean,
+  overriddenByEnv: Schema.Boolean,
+  envOverrideValue: Schema.NullOr(Schema.String),
+  sizeBytes: Schema.NullOr(Schema.Number),
+  pointerPath: Schema.String,
+  previousBaseDir: Schema.NullOr(Schema.String),
+});
+export type DesktopDataDirectoryState = typeof DesktopDataDirectoryStateSchema.Type;
+
+export const DesktopDataDirectoryMigrateInputSchema = Schema.Struct({
+  targetBaseDir: Schema.optionalKey(Schema.String),
+  mode: DesktopDataDirectoryModeSchema,
+  deleteSource: Schema.optionalKey(Schema.Boolean),
+});
+export type DesktopDataDirectoryMigrateInput = typeof DesktopDataDirectoryMigrateInputSchema.Type;
+
+export const DesktopDataDirectoryMigrateResultSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  baseDir: Schema.String,
+  previousBaseDir: Schema.String,
+  deletedSource: Schema.Boolean,
+  targetHadExistingData: Schema.optionalKey(Schema.Boolean),
+  relaunching: Schema.Boolean,
+  error: Schema.optionalKey(Schema.String),
+});
+export type DesktopDataDirectoryMigrateResult = typeof DesktopDataDirectoryMigrateResultSchema.Type;
+
 export interface PickFolderOptions {
   initialPath?: string | null;
   targetEnvironmentId?: string;
@@ -1185,6 +1219,11 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  getDataDirectoryState?: () => Promise<DesktopDataDirectoryState>;
+  migrateDataDirectory?: (
+    input: DesktopDataDirectoryMigrateInput,
+  ) => Promise<DesktopDataDirectoryMigrateResult>;
+  openDataDirectory?: () => Promise<boolean>;
   getWslState: () => Promise<DesktopWslState>;
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;

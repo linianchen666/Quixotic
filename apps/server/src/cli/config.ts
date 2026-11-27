@@ -45,7 +45,7 @@ const hostFlag = Flag.String("host").pipe(
 );
 export const baseDirFlag = Flag.String("base-dir").pipe(
   Flag.withDescription(
-    "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
+    "Explicit Quixotic data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
   ),
   Flag.optional,
 );
@@ -89,7 +89,43 @@ const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
 );
 const lanFlag = Flag.Boolean("lan").pipe(
   Flag.withDescription(
-    "Accept connections from your local network and tailnet, not only this machine (equivalent to T3CODE_LAN).",
+    "Accept connections from your local network and EasyTier mesh, not only this machine (equivalent to T3CODE_LAN).",
+  ),
+  Flag.optional,
+);
+const easyTierCidrFlag = Flag.String("easytier-cidr").pipe(
+  Flag.withDescription(
+    "Override the EasyTier virtual subnet CIDR used for zero-pairing peer discovery (for example 10.126.126.0/24; equivalent to QUIXOTIC_EASYTIER_CIDR).",
+  ),
+  Flag.optional,
+);
+const easyTierPeersFlag = Flag.String("easytier-peers").pipe(
+  Flag.withDescription(
+    "Comma-separated static EasyTier peer addresses (ip or ip:port) to include in discovery (equivalent to QUIXOTIC_EASYTIER_PEERS).",
+  ),
+  Flag.optional,
+);
+const noEasyTierFlag = Flag.Boolean("no-easytier").pipe(
+  Flag.withDescription(
+    "Disable automatic EasyTier mesh discovery and zero-pairing peer authentication (equivalent to QUIXOTIC_EASYTIER=false).",
+  ),
+  Flag.optional,
+);
+const gatewayFlag = Flag.Boolean("gateway").pipe(
+  Flag.withDescription(
+    "Enable Public Gateway mode so mobile clients can reach all EasyTier machines through this server's public IP (equivalent to QUIXOTIC_GATEWAY=true).",
+  ),
+  Flag.optional,
+);
+const gatewayPasswordFlag = Flag.String("gateway-password").pipe(
+  Flag.withDescription(
+    "Access password required for remote/mobile login on this Public Gateway (equivalent to QUIXOTIC_GATEWAY_PASSWORD).",
+  ),
+  Flag.optional,
+);
+const publicGatewayUrlFlag = Flag.String("public-gateway-url").pipe(
+  Flag.withDescription(
+    "Public IP or domain URL advertised for this gateway (for example http://203.0.113.10:3773; equivalent to QUIXOTIC_PUBLIC_GATEWAY_URL).",
   ),
   Flag.optional,
 );
@@ -174,6 +210,35 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   lan: Config.Boolean("T3CODE_LAN").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  easyTierEnabled: Config.Boolean("QUIXOTIC_EASYTIER").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  easyTierCidr: Config.String("QUIXOTIC_EASYTIER_CIDR").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  easyTierPeers: Config.String("QUIXOTIC_EASYTIER_PEERS").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  easyTierPorts: Config.String("QUIXOTIC_EASYTIER_PORTS").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  gatewayMode: Config.Boolean("QUIXOTIC_GATEWAY").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  gatewayPassword: Config.Redacted("QUIXOTIC_GATEWAY_PASSWORD").pipe(
+    Config.option,
+    Config.map(Option.filter((value) => Redacted.value(value).trim().length > 0)),
+    Config.map(Option.getOrUndefined),
+  ),
+  publicGatewayUrl: Config.String("QUIXOTIC_PUBLIC_GATEWAY_URL").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 const DevAuthTokenConfig = Config.Redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
@@ -210,7 +275,34 @@ export interface CliServerFlags {
   readonly tailscaleServeEnabled: Option.Option<boolean>;
   readonly tailscaleServePort: Option.Option<number>;
   readonly lan: Option.Option<boolean>;
+  readonly easyTierCidr: Option.Option<string>;
+  readonly easyTierPeers: Option.Option<string>;
+  readonly noEasyTier: Option.Option<boolean>;
+  readonly gateway: Option.Option<boolean>;
+  readonly gatewayPassword: Option.Option<string>;
+  readonly publicGatewayUrl: Option.Option<string>;
 }
+
+export type CliServerFlagsInput = Omit<
+  CliServerFlags,
+  | "easyTierCidr"
+  | "easyTierPeers"
+  | "noEasyTier"
+  | "gateway"
+  | "gatewayPassword"
+  | "publicGatewayUrl"
+> &
+  Partial<
+    Pick<
+      CliServerFlags,
+      | "easyTierCidr"
+      | "easyTierPeers"
+      | "noEasyTier"
+      | "gateway"
+      | "gatewayPassword"
+      | "publicGatewayUrl"
+    >
+  >;
 
 export interface CliAuthLocationFlags {
   readonly baseDir: Option.Option<string>;
@@ -245,6 +337,12 @@ export const sharedServerCommandFlags = {
   tailscaleServeEnabled: tailscaleServeFlag,
   tailscaleServePort: tailscaleServePortFlag,
   lan: lanFlag,
+  easyTierCidr: easyTierCidrFlag,
+  easyTierPeers: easyTierPeersFlag,
+  noEasyTier: noEasyTierFlag,
+  gateway: gatewayFlag,
+  gatewayPassword: gatewayPasswordFlag,
+  publicGatewayUrl: publicGatewayUrlFlag,
 } as const;
 
 const resolveOptionPrecedence = <Value>(
@@ -263,7 +361,7 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
 });
 
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
-  flags: CliServerFlags,
+  flags: CliServerFlagsInput,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
   options?: {
     readonly startupPresentation?: ServerConfig.StartupPresentation;
@@ -294,6 +392,12 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     tailscaleServeEnabled: flags.tailscaleServeEnabled ?? Option.none(),
     tailscaleServePort: flags.tailscaleServePort ?? Option.none(),
     lan: flags.lan ?? Option.none(),
+    easyTierCidr: flags.easyTierCidr ?? Option.none(),
+    easyTierPeers: flags.easyTierPeers ?? Option.none(),
+    noEasyTier: flags.noEasyTier ?? Option.none(),
+    gateway: flags.gateway ?? Option.none(),
+    gatewayPassword: flags.gatewayPassword ?? Option.none(),
+    publicGatewayUrl: flags.publicGatewayUrl ?? Option.none(),
   } satisfies CliServerFlags;
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
@@ -345,13 +449,13 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
       (runtime.value.ownerId === undefined ||
         isServerOwnershipHeld(derivedPaths.serverRuntimeStatePath))
     ) {
-      // Bare `t3 pair` prefers a linked worktree's `.t3`, so always name this home.
+      // Bare `quixotic-cli pair` prefers a linked worktree's `.t3`, so always name this home.
       const { command: pairCommand } = yield* resolveHostCliCommand("pair", [
         "--base-dir",
         baseDir,
       ]);
       return yield* new CliError.UserError({
-        cause: `A T3 Code server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). To open it, run \`${pairCommand}\` and open the pairing URL it prints. To start another server, stop this one first or use a different --base-dir.`,
+        cause: `A Quixotic server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). To open it, run \`${pairCommand}\` and open the pairing URL it prints. To start another server, stop this one first or use a different --base-dir.`,
       });
     }
   }
@@ -399,14 +503,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => Boolean(devUrl),
   );
-  const tailscaleServeEnabled = Option.getOrElse(
-    resolveOptionPrecedence(
-      normalizedFlags.tailscaleServeEnabled,
-      Option.fromUndefinedOr(env.tailscaleServeEnabled),
-      Option.fromUndefinedOr(bootstrap?.tailscaleServeEnabled),
-    ),
-    () => false,
-  );
+  // Legacy Tailscale Serve is disabled in favor of EasyTier mesh.
+  const tailscaleServeEnabled = false;
   const tailscaleServePort = Option.getOrElse(
     resolveOptionPrecedence(
       normalizedFlags.tailscaleServePort,
@@ -415,17 +513,66 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => 443,
   );
+  const easyTierEnabled = Option.getOrElse(
+    resolveOptionPrecedence(
+      Option.map(normalizedFlags.noEasyTier, (disabled) => !disabled),
+      Option.fromUndefinedOr(env.easyTierEnabled),
+    ),
+    () => true,
+  );
+  const easyTierCidr = Option.getOrUndefined(
+    resolveOptionPrecedence(
+      normalizedFlags.easyTierCidr,
+      Option.fromUndefinedOr(env.easyTierCidr),
+    ).pipe(Option.map((value) => value.trim()), Option.filter((value) => value.length > 0)),
+  );
+  const easyTierPeersRaw = Option.getOrUndefined(
+    resolveOptionPrecedence(
+      normalizedFlags.easyTierPeers,
+      Option.fromUndefinedOr(env.easyTierPeers),
+    ),
+  );
+  const easyTierPeers = easyTierPeersRaw
+    ?.split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const easyTierPorts = env.easyTierPorts
+    ?.split(",")
+    .map((entry) => Number.parseInt(entry.trim(), 10))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535);
+  const gatewayPassword = Option.getOrUndefined(
+    resolveOptionPrecedence(
+      Option.map(
+        Option.filter(normalizedFlags.gatewayPassword, (value) => value.trim().length > 0),
+        (value) => Redacted.make(value.trim()),
+      ),
+      Option.fromUndefinedOr(env.gatewayPassword),
+    ),
+  );
+  const gatewayMode = Option.getOrElse(
+    resolveOptionPrecedence(
+      normalizedFlags.gateway,
+      Option.fromUndefinedOr(env.gatewayMode),
+      gatewayPassword !== undefined ? Option.some(true) : Option.none(),
+    ),
+    () => false,
+  );
+  const publicGatewayUrl = Option.getOrUndefined(
+    resolveOptionPrecedence(
+      normalizedFlags.publicGatewayUrl,
+      Option.fromUndefinedOr(env.publicGatewayUrl),
+    ).pipe(Option.map((value) => value.trim()), Option.filter((value) => value.length > 0)),
+  );
   const staticDir = devUrl ? undefined : yield* ServerConfig.resolveStaticDir();
   const explicitHost = resolveOptionPrecedence(
     normalizedFlags.host,
     Option.fromUndefinedOr(env.host),
     Option.fromUndefinedOr(bootstrap?.host),
   );
-  // Private networks only, so clients learn a LAN address and prefer it over
-  // T3 Connect. `t3 service install` writes T3CODE_LAN=false for a new
-  // service; one installed before T3CODE_LAN existed keeps listening.
+  // Private networks only unless Public Gateway mode or explicit --host is configured.
   const lan = resolveOptionPrecedence(normalizedFlags.lan, Option.fromUndefinedOr(env.lan));
   const privateNetworkOnly =
+    !gatewayMode &&
     Option.isNone(explicitHost) &&
     mode === "web" &&
     (Option.isSome(lan)
@@ -435,7 +582,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
           Effect.orElseSucceed(() => false),
         ));
   const host = Option.getOrElse(explicitHost, () =>
-    privateNetworkOnly ? "0.0.0.0" : mode === "desktop" ? "127.0.0.1" : undefined,
+    gatewayMode || privateNetworkOnly ? "0.0.0.0" : mode === "desktop" ? "127.0.0.1" : undefined,
   );
   const port = yield* Option.match(
     resolveOptionPrecedence(
@@ -538,6 +685,13 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     logWebSocketEvents,
     tailscaleServeEnabled,
     tailscaleServePort,
+    easyTierEnabled,
+    ...(easyTierCidr === undefined ? {} : { easyTierCidr }),
+    ...(easyTierPeers && easyTierPeers.length > 0 ? { easyTierPeers } : {}),
+    ...(easyTierPorts && easyTierPorts.length > 0 ? { easyTierPorts } : {}),
+    ...(gatewayMode ? { gatewayMode } : {}),
+    ...(gatewayPassword === undefined ? {} : { gatewayPassword }),
+    ...(publicGatewayUrl === undefined ? {} : { publicGatewayUrl }),
   };
 
   return config;

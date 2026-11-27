@@ -48,19 +48,8 @@ export function SettingsLabsRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <MachineBetaSection
-          title={gt("Linked environments")}
-          icon="link"
-          capability="peerLinks"
-          setting="linkedEnvironmentsEnabled"
-          description={gt(
-            "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While off, nothing new starts over a link; running tasks finish.",
-          )}
-        />
-        <MachineBetaSection
           title={gt("Fast worktree checkout")}
           icon="bolt.circle"
-          capability="fastWorktreeCheckout"
-          setting="fastWorktreeCheckout"
           description={gt(
             "On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache.",
           )}
@@ -264,8 +253,6 @@ export function NewThreadSettingsSection() {
   );
 }
 
-type MachineBetaSetting = "linkedEnvironmentsEnabled" | "fastWorktreeCheckout";
-
 const AGENT_FEEDBACK_CHOICES: ReadonlyArray<{
   readonly mode: AgentFeedbackMode;
   readonly label: string;
@@ -356,14 +343,10 @@ function AgentFeedbackSection() {
 function MachineBetaSection({
   title,
   icon,
-  capability,
-  setting,
   description,
 }: {
   readonly title: string;
   readonly icon: ComponentProps<typeof SettingsSwitchRow>["icon"];
-  readonly capability: "peerLinks" | "fastWorktreeCheckout";
-  readonly setting: MachineBetaSetting;
   readonly description: string;
 }) {
   const gt = useGT();
@@ -371,11 +354,11 @@ function MachineBetaSection({
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities[capability] === true,
+      environment.serverConfig?.environment.capabilities.fastWorktreeCheckout === true,
   );
   const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: `${setting} beta update`,
+    label: "fast worktree checkout update",
     reportFailure: true,
   });
   if (supported.length === 0) return null;
@@ -384,7 +367,7 @@ function MachineBetaSection({
       <SettingsSection title={gt("Beta: {feature}", { feature: title })}>
         {supported.map((environment) => {
           const policy = environment.serverConfig?.managedPolicy;
-          const managed = isManagedSettingPath(policy, setting);
+          const managed = isManagedSettingPath(policy, "fastWorktreeCheckout");
           return (
             <SettingsSwitchRow
               key={environment.environmentId}
@@ -397,16 +380,13 @@ function MachineBetaSection({
                     }),
                   }
                 : {})}
-              value={environment.serverConfig?.settings[setting] === true}
+              value={environment.serverConfig?.settings.fastWorktreeCheckout === true}
               disabled={managed || !writable.has(environment.environmentId)}
               onValueChange={(value) =>
                 void updateSettings({
                   environmentId: environment.environmentId,
                   input: {
-                    patch:
-                      setting === "linkedEnvironmentsEnabled"
-                        ? { linkedEnvironmentsEnabled: value }
-                        : { fastWorktreeCheckout: value },
+                    patch: { fastWorktreeCheckout: value },
                   },
                 })
               }

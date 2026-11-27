@@ -38,6 +38,7 @@ import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { checkRequestDpopProof } from "./dpop.ts";
+import * as EasyTierMesh from "../easytier/EasyTierMesh.ts";
 import { requestUrl } from "../requestUrl.ts";
 
 const CREDENTIAL_RESPONSE_HEADERS = {
@@ -45,8 +46,9 @@ const CREDENTIAL_RESPONSE_HEADERS = {
   pragma: "no-cache",
 } as const;
 
-const appendCredentialResponseHeaders = HttpEffect.appendPreResponseHandler((_request, response) =>
-  Effect.succeed(HttpServerResponse.setHeaders(response, CREDENTIAL_RESPONSE_HEADERS)),
+export const appendCredentialResponseHeaders = HttpEffect.appendPreResponseHandler(
+  (_request, response) =>
+    Effect.succeed(HttpServerResponse.setHeaders(response, CREDENTIAL_RESPONSE_HEADERS)),
 );
 
 const appendDpopChallengeHeader = HttpEffect.appendPreResponseHandler((_request, response) =>
@@ -218,7 +220,7 @@ const sessionCookieOptions = (request: HttpServerRequest.HttpServerRequest) => (
   secure: Option.exists(requestUrl(request), (url) => url.protocol === "https:"),
 });
 
-const appendSessionCookie = (
+export const appendSessionCookie = (
   request: HttpServerRequest.HttpServerRequest,
   cookieName: string,
   token: string,
@@ -292,6 +294,9 @@ export const layer = HttpApiBuilder.group(
             yield* annotateEnvironmentRequest(args.endpoint.name);
             const request = yield* HttpServerRequest.HttpServerRequest;
             const result = yield* serverAuth.getSessionState(request);
+            const meshOpt = yield* Effect.serviceOption(EasyTierMesh.EasyTierMesh);
+            const easyTierDirectPeer =
+              Option.isSome(meshOpt) && meshOpt.value.isDirectEasyTierRequest(request);
             const credential = EnvironmentAuth.selectRequestCredential(
               request,
               sessions.cookieName,
@@ -311,7 +316,7 @@ export const layer = HttpApiBuilder.group(
               );
               yield* appendCredentialResponseHeaders;
             }
-            return result;
+            return easyTierDirectPeer ? { ...result, easyTierDirectPeer: true } : result;
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("internal_error", error),

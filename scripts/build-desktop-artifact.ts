@@ -15,6 +15,7 @@ import {
   type DirectoryRecord,
 } from "@electron/asar";
 
+import { cliArchiveStem } from "@t3tools/shared/cliRelease";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
@@ -3011,6 +3012,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "win") {
     buildConfig.npmRebuild = false;
     buildConfig.nsis = {
+      oneClick: false,
+      allowToChangeInstallationDirectory: true,
+      perMachine: false,
+      allowElevation: true,
+      createDesktopShortcut: true,
+      createStartMenuShortcut: true,
+      deleteAppDataOnUninstall: false,
       differentialPackage: true,
       // Match the existing NSIS installation record while keeping Quixotic's own app identity.
       guid: "e9197887-efb3-55e0-985e-d6d3b5dd594a",
@@ -3089,9 +3097,8 @@ export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(functi
   );
 });
 
-// Match cliArchiveStem without its circular import. WSL uses the Windows host's architecture.
 export const wslRuntimeArchiveStem = (version: string, arch: typeof BuildArch.Type): string =>
-  `t3-${version}-linux-${arch}`;
+  cliArchiveStem(version, `linux-${arch}`);
 
 export const parseWslRuntimeArchiveMembers = (listing: string): ReadonlyArray<string> =>
   listing
@@ -3558,12 +3565,14 @@ export const validateWindowsPackagedPayload = Effect.fn(
     }
     const members = parseWslRuntimeArchiveMembers(listing.stdout);
     // The WSL installer finds t3 under the archive's single stem-named directory.
-    const stem = wslRuntimeArchiveStem(input.appVersion, input.targetArch);
+    const brandedStem = wslRuntimeArchiveStem(input.appVersion, input.targetArch);
+    const legacyStem = `t3-${input.appVersion}-linux-${input.targetArch}`;
     const topLevel = new Set(members.map((member) => member.split("/")[0]));
-    if (topLevel.size !== 1 || !topLevel.has(stem)) {
+    const [stem] = topLevel;
+    if (topLevel.size !== 1 || (stem !== brandedStem && stem !== legacyStem)) {
       return yield* invalidWslRuntime(
         new Error(
-          `WSL runtime archive must contain a single top-level directory ${stem}, found ${[...topLevel].join(", ") || "nothing"}`,
+          `WSL runtime archive must contain a single top-level directory ${brandedStem} or ${legacyStem}, found ${[...topLevel].join(", ") || "nothing"}`,
         ),
       );
     }
@@ -4314,12 +4323,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   wslRuntime: Flag.String("wsl-runtime").pipe(
     Flag.withDescription(
-      "Path to the Linux CLI release archive (t3-<version>-linux-x64.tar.gz) to embed as the WSL runtime of a Windows build (env: T3CODE_DESKTOP_WSL_RUNTIME).",
+      "Path to the Quixotic Linux CLI release archive (quixotic-cli-<version>-linux-<arch>.tar.gz) to embed as the WSL runtime of a Windows build (env: T3CODE_DESKTOP_WSL_RUNTIME).",
     ),
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a desktop artifact for Quixotic."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

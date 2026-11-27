@@ -14,6 +14,7 @@ import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } fr
 
 import {
   CLI_RELEASE_CHECKSUMS_FILE,
+  CLI_RELEASE_SOURCE_UNAVAILABLE,
   cliArchiveFileName,
   cliArchivePlatformKey,
   cliArchiveTarCommand,
@@ -79,6 +80,7 @@ export class PinnedRuntimeInstallError extends Schema.TaggedError<PinnedRuntimeI
   },
 ) {
   override get message(): string {
+    if (this.step === CLI_RELEASE_SOURCE_UNAVAILABLE) return this.step;
     return this.exitCode === undefined
       ? `Pinned runtime install failed while ${this.step}.`
       : `Pinned runtime install failed while ${this.step} (exit code ${this.exitCode}).`;
@@ -272,10 +274,10 @@ const downloadArchive = Effect.fn("cloud.pinned_runtime.download_archive")(funct
   }
   const httpClient = input.httpClient;
   input.onProgress?.({ stage: "download", received: 0, total: undefined });
-  const { fileName, expected } = yield* publishedArchive(input, platformKey);
+  const { fileName, expected, releaseBaseUrl } = yield* publishedArchive(input, platformKey);
   const archive = yield* fetchReleaseAsset(
     httpClient,
-    cliReleaseAssetUrl(input.version, fileName, input.releaseBaseUrl),
+    cliReleaseAssetUrl(input.version, fileName, releaseBaseUrl),
     "downloading the t3 release archive",
     true,
     input.onProgress,
@@ -338,12 +340,16 @@ const publishedArchive = Effect.fn("cloud.pinned_runtime.published_archive")(fun
   input: PinnedRuntimeInstallInput,
   platformKey: CliArchivePlatformKey,
 ) {
+  const releaseBaseUrl = input.releaseBaseUrl?.trim();
+  if (!releaseBaseUrl) {
+    return yield* new PinnedRuntimeInstallError({ step: CLI_RELEASE_SOURCE_UNAVAILABLE });
+  }
   const fileName = cliArchiveFileName(input.version, platformKey);
   const checksums = parseChecksums(
     new TextDecoder().decode(
       yield* fetchReleaseAsset(
         input.httpClient,
-        cliReleaseAssetUrl(input.version, CLI_RELEASE_CHECKSUMS_FILE, input.releaseBaseUrl),
+        cliReleaseAssetUrl(input.version, CLI_RELEASE_CHECKSUMS_FILE, releaseBaseUrl),
         "downloading the t3 release checksums",
         false,
       ),
@@ -355,7 +361,7 @@ const publishedArchive = Effect.fn("cloud.pinned_runtime.published_archive")(fun
       step: `finding ${fileName} in the t3 release checksums`,
     });
   }
-  return { fileName, expected };
+  return { fileName, expected, releaseBaseUrl };
 });
 
 const isPinnedRuntimeInstallError = Schema.is(PinnedRuntimeInstallError);
@@ -397,6 +403,9 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
     return paths;
+  }
+  if (!input.releaseBaseUrl?.trim()) {
+    return yield* new PinnedRuntimeInstallError({ step: CLI_RELEASE_SOURCE_UNAVAILABLE });
   }
   if (versionDirExists) {
     yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
@@ -649,17 +658,15 @@ export const findPosixLauncher = Effect.fn("cloud.pinned_runtime.find_posix_laun
       .pipe(Effect.orElseSucceed(() => ""));
     const cwd = yield* HostProcess.WorkingDirectory;
     const searchPath = environment["PATH"] ?? "";
+    const home = yield* HostProcess.HomeDirectory;
+    const installBinDir = environment["T3CODE_INSTALL_BIN_DIR"] || path.join(home, ".local", "bin");
     const candidates = [
       // PATH first, resolved like the shell does: it decides which t3 the user runs. An empty
       // entry of a nonempty PATH is the working directory; an empty PATH searches nothing.
-      ...(searchPath.length === 0 ? [] : searchPath.split(":")).map((directory) =>
-        path.resolve(cwd, directory || ".", "t3"),
+      ...(searchPath.length === 0 ? [] : searchPath.split(":")).flatMap((directory) =>
+        ["quixotic-cli", "t3"].map((name) => path.resolve(cwd, directory || ".", name)),
       ),
-      path.join(
-        environment["T3CODE_INSTALL_BIN_DIR"] ||
-          path.join(yield* HostProcess.HomeDirectory, ".local", "bin"),
-        "t3",
-      ),
+      ...["quixotic-cli", "t3"].map((name) => path.join(installBinDir, name)),
       ...recorded.split(/\r?\n/),
     ].filter((candidate) => path.isAbsolute(candidate));
     for (const candidate of candidates) {
@@ -706,7 +713,7 @@ const shellLauncherTargets = Effect.fn("cloud.pinned_runtime.shell_launcher_targ
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
   const home = yield* HostProcess.HomeDirectory;
-  const launcherName = platform === "win32" ? "t3.cmd" : "t3";
+  const launcherNames = platform === "win32" ? ["quixotic-cli.cmd", "t3.cmd"] : ["quixotic-cli", "t3"];
   const launchersFile = path.join(baseDir, PINNED_RUNTIME_DIR, PINNED_RUNTIME_LAUNCHERS_FILE);
   const recorded = (yield* fs.readFileString(launchersFile).pipe(Effect.orElseSucceed(() => "")))
     .split(/\r?\n/)
@@ -716,7 +723,7 @@ const shellLauncherTargets = Effect.fn("cloud.pinned_runtime.shell_launcher_targ
     ...(environment["PATH"] ?? environment["Path"] ?? "").split(platform === "win32" ? ";" : ":"),
   ]
     .filter((directory) => path.isAbsolute(directory))
-    .map((directory) => path.join(directory, launcherName));
+    .flatMap((directory) => launcherNames.map((name) => path.join(directory, name)));
   const versionsDir = pinnedRuntimeVersionsDir(path, baseDir);
   const realVersionsDir = yield* fs
     .realPath(versionsDir)

@@ -1,42 +1,38 @@
 import type { APIRoute } from "astro";
 
-import {
-  DEFAULT_LOCALE,
-  isLocalizedPath,
-  LOCALES,
-  type LocalizedPath,
-  localizedHref,
-} from "../i18n/locales";
-import { absoluteUrl, STATIC_PAGES } from "../lib/seo";
+import { DEFAULT_LOCALE, LOCALES, LOCALIZED_PATHS, localizedHref } from "../i18n/locales";
 
-// Each localized URL lists every translation plus x-default, as Google's sitemap hreflang format asks.
-const alternateLinks = (path: LocalizedPath) =>
-  [
-    ...LOCALES.map((entry) => ({ hreflang: entry.code, href: localizedHref(entry.code, path) })),
-    { hreflang: "x-default", href: localizedHref(DEFAULT_LOCALE, path) },
-  ]
-    .map(
-      (entry) =>
-        `    <xhtml:link rel="alternate" hreflang="${entry.hreflang}" href="${absoluteUrl(entry.href)}"/>`,
-    )
-    .join("\n");
-
-export const GET: APIRoute = () => {
-  const urls = STATIC_PAGES.flatMap((page) => {
-    const path = page.path;
-    if (!isLocalizedPath(path)) {
-      return [`  <url><loc>${absoluteUrl(path)}</loc><priority>${page.priority}</priority></url>`];
+export const GET: APIRoute = ({ site }) => {
+  const entries: string[] = [];
+  if (site) {
+    const absolute = (path: string) => new URL(path, site).href;
+    for (const path of LOCALIZED_PATHS) {
+      const alternates = LOCALES.map(
+        ({ code }) =>
+          `<xhtml:link rel="alternate" hreflang="${code}" href="${absolute(localizedHref(code, path))}"/>`,
+      );
+      alternates.push(
+        `<xhtml:link rel="alternate" hreflang="x-default" href="${absolute(localizedHref(DEFAULT_LOCALE, path))}"/>`,
+      );
+      for (const { code } of LOCALES) {
+        entries.push(
+          `<url><loc>${absolute(localizedHref(code, path))}</loc>${alternates.join("")}</url>`,
+        );
+      }
     }
-    const alternates = alternateLinks(path);
-    return LOCALES.map(
-      (entry) =>
-        `  <url>\n    <loc>${absoluteUrl(localizedHref(entry.code, path))}</loc>\n    <priority>${page.priority}</priority>\n${alternates}\n  </url>`,
-    );
-  });
-  const body = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
-${urls.join("\n")}
-</urlset>
-`;
-  return new Response(body, { headers: { "Content-Type": "application/xml; charset=utf-8" } });
+    for (const path of [
+      "/app",
+      "/mobile",
+      "/legal",
+      "/privacy-policy",
+      "/security-policy",
+      "/terms-of-service",
+    ]) {
+      entries.push(`<url><loc>${absolute(path)}</loc></url>`);
+    }
+  }
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${entries.join("\n")}\n</urlset>\n`,
+    { headers: { "Content-Type": "application/xml; charset=utf-8" } },
+  );
 };

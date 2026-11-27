@@ -77,7 +77,9 @@ const ownsLauncher = Effect.fn("cli.uninstall.owns_launcher")(function* (
   const realVersionsDir = yield* fs
     .realPath(versionsDir)
     .pipe(Effect.orElseSucceed(() => versionsDir));
-  const scriptTarget = platform === "win32" ? undefined : yield* readPosixLauncherTarget(launcher);
+  const resolvedLauncher = yield* fs.realPath(launcher).pipe(Effect.orElseSucceed(() => launcher));
+  const scriptTarget =
+    platform === "win32" ? undefined : yield* readPosixLauncherTarget(resolvedLauncher);
   // The link or script text keeps a pruned (dangling) target; the real path sees through a
   // symlinked T3 home.
   const targets =
@@ -211,7 +213,7 @@ const logOtherHomeService = (plan: UninstallPlan) =>
   plan.otherHomeService === undefined
     ? Effect.void
     : Console.log(
-        `The T3 Code service serves ${plan.otherHomeService}, so it was not removed. Pass \`${BootService.formatBootServiceBaseDirOption(plan.otherHomeService)}\` to remove it.`,
+        `The Quixotic service serves ${plan.otherHomeService}, so it was not removed. Pass \`${BootService.formatBootServiceBaseDirOption(plan.otherHomeService)}\` to remove it.`,
       );
 
 const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
@@ -228,7 +230,7 @@ const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
     yield* Console.log(`Nothing to remove: t3 is not installed for ${input.baseDir}.`);
     if (!(yield* HostProcess.IsExecutable)) {
       yield* Console.log(
-        "  This t3 runs from a Node script, so it was installed by npm or built from source. Remove it the same way (`npm uninstall -g t3`, or delete the checkout).",
+        "  This quixotic-cli runs from a Node script, so it was installed by npm or built from source. Remove it the same way (`npm uninstall -g quixotic-cli`, or delete the checkout).",
       );
     }
     yield* logOtherHomeService(plan);
@@ -306,6 +308,6 @@ const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
     }
   }
   yield* Console.log("");
-  yield* Console.log("t3 is uninstalled. Thanks for trying T3 Code.");
+  yield* Console.log("Quixotic CLI is uninstalled.");
   yield* logOtherHomeService(plan);
 });

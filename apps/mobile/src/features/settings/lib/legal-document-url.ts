@@ -1,10 +1,8 @@
-const DEFAULT_MARKETING_SITE_URL = "https://t3.codes";
-
-function resolveMarketingSiteUrl(override: string | undefined): URL {
+function resolveMarketingSiteUrl(override: string | undefined): URL | null {
   try {
-    const url = new URL(override?.trim() || DEFAULT_MARKETING_SITE_URL);
+    const url = new URL(override?.trim() || "");
     if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return new URL(DEFAULT_MARKETING_SITE_URL);
+      return null;
     }
 
     url.search = "";
@@ -12,14 +10,14 @@ function resolveMarketingSiteUrl(override: string | undefined): URL {
     url.pathname = `${url.pathname.replace(/\/+$/, "")}/`;
     return url;
   } catch {
-    return new URL(DEFAULT_MARKETING_SITE_URL);
+    return null;
   }
 }
 
 const MARKETING_SITE_URL = resolveMarketingSiteUrl(process.env.EXPO_PUBLIC_MARKETING_SITE_URL);
 
-function marketingSiteDocumentUrl(path: string): string {
-  return new URL(path, MARKETING_SITE_URL).toString();
+function marketingSiteDocumentUrl(path: string): string | null {
+  return MARKETING_SITE_URL ? new URL(path, MARKETING_SITE_URL).toString() : null;
 }
 
 const PRIVACY_POLICY_URL = marketingSiteDocumentUrl("privacy-policy");
@@ -47,7 +45,7 @@ function webDocumentIdentity(value: string): string | null {
 }
 
 const ALLOWED_LEGAL_DOCUMENT_IDENTITIES = new Set(
-  ALLOWED_LEGAL_DOCUMENT_URLS.map(webDocumentIdentity).filter(
+  ALLOWED_LEGAL_DOCUMENT_URLS.map((value) => value === null ? null : webDocumentIdentity(value)).filter(
     (value): value is string => value !== null,
   ),
 );

@@ -19,7 +19,7 @@ const PINNED_RUNTIME_ENTRY = /^(.*)\/runtime\/versions\/[^/]+\/t3$/;
 
 export type CliRunner = "npx" | "pnpm dlx" | "bunx";
 
-/** Detection is best-effort; callers must fail closed to a plain `t3` command. */
+/** Identify the package runner from its local cache layout. */
 export function detectCliRunner(entryPath: string): CliRunner | null {
   const path = entryPath.replaceAll("\\", "/");
   if (path.includes("/_npx/")) {
@@ -41,7 +41,7 @@ export function detectCliRunner(entryPath: string): CliRunner | null {
 const InstallManifest = Schema.Struct({
   name: Schema.String,
   version: Schema.String,
-  bin: Schema.optionalKey(Schema.Struct({ t3: Schema.String })),
+  bin: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 const decodeInstallManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(InstallManifest));
 
@@ -59,7 +59,7 @@ export const resolveEntryPath = Effect.gen(function* () {
       .pipe(Effect.flatMap(decodeInstallManifest), Effect.option);
     if (
       Option.isSome(manifest) &&
-      manifest.value.name === "t3" &&
+      (manifest.value.name === packageJson.name || manifest.value.name === "t3") &&
       manifest.value.version === packageJson.version
     ) {
       return npmLauncher;
@@ -100,7 +100,8 @@ export const resolveServerInstallation = Effect.gen(function* () {
       baseDir: linked[1] || "/",
     } satisfies ServerInstallation;
   }
-  const match = /^(.*)\/lib\/node_modules\/t3\/(?:dist\/bin\.mjs|bin\/t3\.mjs)$/.exec(entry);
+  const match =
+    /^(.*)\/lib\/node_modules\/(quixotic-cli|t3)\/(?:dist\/bin\.mjs|bin\/t3\.mjs)$/.exec(entry);
   if (!match) {
     const runner = detectCliRunner(entry);
     return runner === null
@@ -116,39 +117,30 @@ export const resolveServerInstallation = Effect.gen(function* () {
   )
     return null;
 
-  const packageRoot = path.join(prefix, "lib/node_modules/t3");
+  const packageName = match[2]!;
+  const packageRoot = path.join(prefix, "lib/node_modules", packageName);
   const manifest = yield* fs
     .readFileString(path.join(packageRoot, "package.json"))
     .pipe(Effect.flatMap(decodeInstallManifest));
-  if (manifest.name !== "t3" || !manifest.bin) return null;
-  const bin = yield* fs.realPath(path.join(packageRoot, manifest.bin.t3));
-  const globalBin = yield* fs.realPath(path.join(prefix, "bin/t3"));
+  const binPath = manifest.bin?.[packageName];
+  if (manifest.name !== packageName || !binPath) return null;
+  const bin = yield* fs.realPath(path.join(packageRoot, binPath));
+  const globalBin = yield* fs.realPath(path.join(prefix, "bin", packageName));
   if (globalBin !== bin || bin !== entry) return null;
   return { kind: "npm-global", prefix } satisfies ServerInstallation;
 }).pipe(Effect.orElseSucceed(() => null));
 
-/** The original package spec is unavailable at startup; infer its channel from the version. */
-function suggestedPackageSpec(version: string): string {
-  const channel = /^[^-+]+-(nightly|preview)\./.exec(version)?.[1];
-  return channel === undefined ? "t3" : `t3@${channel}`;
-}
-
-function formatCliCommand(input: {
-  readonly subcommand: string;
-  readonly entryPath: string;
-  readonly version: string;
-}): string {
-  const runner = detectCliRunner(input.entryPath);
-  if (runner === null) {
-    return `t3 ${input.subcommand}`;
-  }
-  return `${runner} ${suggestedPackageSpec(input.version)} ${input.subcommand}`;
-}
-
-export const resolveCliCommand = (subcommand: string) =>
-  Effect.map(resolveEntryPath, (entryPath) =>
-    formatCliCommand({ subcommand, entryPath, version: packageJson.version }),
-  );
+export const resolveCliCommand = Effect.fn("invocation.resolveCliCommand")(function* (
+  subcommand: string,
+) {
+  const entry = yield* resolveEntryPath;
+  if (detectCliRunner(entry) === null) return `${packageJson.name} ${subcommand}`;
+  const executable = yield* HostProcess.ExecutablePath;
+  const platform = yield* HostProcess.Platform;
+  const call = shellCommandPath(platform, executable);
+  if (yield* HostProcess.IsExecutable) return `${call} ${subcommand}`;
+  return `${call} ${hostShellWord(platform, entry)} ${subcommand}`;
+});
 
 const shellWord = (value: string) =>
   /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -163,6 +155,10 @@ const powershellWord = (value: string) =>
 export const hostShellWord = (platform: NodeJS.Platform, value: string) =>
   platform === "win32" ? powershellWord(value) : shellWord(value);
 
+/** PowerShell runs a quoted path only through the call operator. */
+const shellCommandPath = (platform: NodeJS.Platform, value: string) =>
+  platform === "win32" ? `& ${powershellWord(value)}` : shellWord(value);
+
 /** Script installs have no single launcher; desktop shims and standalone binaries do. */
 const resolveInstallLauncher = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -176,7 +172,7 @@ const resolveInstallLauncher = Effect.gen(function* () {
 });
 
 /**
- * Uses this install's `t3` on PATH, the originating runner, or its absolute launcher path.
+ * Uses this install's command on PATH, its cached entry point, or its absolute launcher path.
  * Arguments are quoted for POSIX shells or PowerShell on Windows.
  */
 export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand")(function* (
@@ -185,16 +181,17 @@ export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand
 ) {
   const platform = yield* HostProcess.Platform;
   const withArgs = (prefix: string) =>
-    // An empty subcommand names the root `t3` command.
+    // An empty subcommand names the CLI itself.
     [prefix.trimEnd(), ...args.map((arg) => hostShellWord(platform, arg))].join(" ");
   const command = yield* resolveCliCommand(subcommand);
-  if (command !== `t3 ${subcommand}`) return { command: withArgs(command), launcher: false };
-  const onPath = yield* resolveCommandPath("t3");
+  if (command !== `${packageJson.name} ${subcommand}`)
+    return { command: withArgs(command), launcher: false };
+  const onPath = yield* resolveCommandPath(packageJson.name);
   if (onPath !== null) {
     const shim = (yield* HostProcess.Environment).T3CODE_CLI_PATH?.trim();
     const fs = yield* FileSystem.FileSystem;
     const real = (file: string) => fs.realPath(file).pipe(Effect.orElseSucceed(() => null));
-    // Windows `t3.cmd` shims are text files that never realpath to the executable they run.
+    // Windows command shims are text files that never realpath to the executable they run.
     const own = shim
       ? yield* real(shim)
       : platform !== "win32" && (yield* HostProcess.IsExecutable)
@@ -207,7 +204,7 @@ export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand
     if (own === null || own === (yield* real(onPath))) {
       const path = yield* Path.Path;
       const searchPath = (yield* HostProcess.Environment).PATH ?? "";
-      // With an empty or relative PATH entry, plain `t3` depends on the directory it runs from.
+      // With an empty or relative PATH entry, a bare command depends on the directory it runs from.
       const cwdDependent =
         platform !== "win32" &&
         searchPath.length > 0 &&
@@ -219,9 +216,7 @@ export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand
   }
   const launcher = yield* resolveInstallLauncher;
   if (Option.isNone(launcher)) return { command: withArgs(command), launcher: false };
-  // PowerShell runs a quoted path only through the call operator.
-  const quoted = hostShellWord(platform, launcher.value);
-  const call = platform === "win32" ? `& ${quoted}` : quoted;
+  const call = shellCommandPath(platform, launcher.value);
   return { command: withArgs(`${call} ${subcommand}`), launcher: true };
 });
 
@@ -236,19 +231,24 @@ export const resolveHostCliHint = (
     ...args,
   ]).pipe(Effect.map(({ command }) => command));
 
-/**
- * `sudo` resets PATH on most distributions, which drops a user-installed Node
- * (nvm, fnm, a tarball) and with it `npx` or a global `t3`, so the command
- * carries PATH through unless Node is on root's PATH too. An absolute launcher
- * needs neither.
- */
+/** Use the running executable or script when sudo resets PATH. */
 export const resolveRootCliCommand = Effect.fn("invocation.resolveRootCliCommand")(function* (
   subcommand: string,
   args: ReadonlyArray<string> = [],
 ) {
-  const { command, launcher } = yield* resolveHostCliCommand(subcommand, args);
-  if (launcher) return `sudo ${command}`;
+  const launcher = yield* resolveInstallLauncher;
+  const suffix = [subcommand, ...args.map(shellWord)].join(" ");
+  if (Option.isSome(launcher)) return `sudo ${shellWord(launcher.value)} ${suffix}`;
+  const entry = yield* resolveEntryPath;
   const executablePath = yield* HostProcess.ExecutablePath;
+  if (entry !== "") {
+    const path = yield* Path.Path;
+    const environment = yield* HostProcess.Environment;
+    const prefix =
+      environment.ELECTRON_RUN_AS_NODE === "1" ? "sudo env ELECTRON_RUN_AS_NODE=1" : "sudo";
+    return `${prefix} ${shellWord(executablePath)} ${shellWord(path.resolve(entry))} ${suffix}`;
+  }
+  const { command } = yield* resolveHostCliCommand(subcommand, args);
   const systemNode = ROOT_PATH_DIRECTORIES.some((directory) =>
     executablePath.startsWith(`${directory}/`),
   );

@@ -70,7 +70,6 @@ export interface SettingsSearchItem {
   readonly primaryEnvironmentOnly?: boolean;
   readonly wslAvailableOnly?: boolean;
   readonly managedTunnelOnly?: boolean;
-  readonly peerLinksOnly?: boolean;
   readonly fastWorktreeCheckoutOnly?: boolean;
   readonly agentFeedbackOnly?: boolean;
   readonly textGeneratorsOnly?: boolean;
@@ -87,7 +86,6 @@ export interface SettingsSearchAvailability {
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
   readonly managedTunnelActive?: boolean;
-  readonly hasPeerLinkHost?: boolean;
   readonly hasFastWorktreeCheckoutEnvironment?: boolean;
   readonly hasAgentFeedbackEnvironment?: boolean;
   /** An environment without a provider allow-list, which hides text generators. */
@@ -263,6 +261,15 @@ export const SETTINGS_SEARCH_ITEMS = [
       msg(
         "any local files uncommitted changes edited tracked files ignored env build output cleanup",
       ),
+    ],
+  },
+  {
+    id: "storage-data-directory",
+    title: msg("User data directory"),
+    to: "/settings/maintenance",
+    desktopOnly: true,
+    searchTerms: [
+      msg("user data directory folder path drive migrate move c drive d drive home storage location"),
     ],
   },
   {
@@ -550,20 +557,6 @@ export const SETTINGS_SEARCH_ITEMS = [
         "accessibility a11y screen reader nvda jaws voiceover orca narrator window title tab title alt tab taskbar thread status order working approval",
       ),
     ],
-  },
-  {
-    id: "guest-links",
-    title: msg("Guest links"),
-    to: "/settings/labs",
-    scope: "environment",
-    searchTerms: [msg("beta share guest invite link teammate watch t3 connect tunnel")],
-  },
-  {
-    id: "linked-environments-beta",
-    title: msg("Linked environments"),
-    to: "/settings/labs",
-    scope: "environment",
-    searchTerms: [msg("beta link another machine vps peer agents work there delegate")],
   },
   {
     id: "workflows-beta",
@@ -1220,7 +1213,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "pull-request-links-open-in-app",
-    title: msg("Open pull requests in T3 Code"),
+    title: msg("Open pull requests in Quixotic"),
     to: "/settings/diffs",
     searchTerms: [
       `pr commit links ${SOURCE_CONTROL_HOST_LABELS} browser external click default pull request view panel`,
@@ -1382,13 +1375,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     localBackendManagementOnly: true,
   },
   {
-    id: "tailscale-https",
-    title: msg("Tailscale HTTPS"),
+    id: "easytier-mesh",
+    title: msg("EasyTier mesh"),
     to: "/settings/access",
-    targetId: "connections-environment",
-    searchTerms: [msg("serve magicdns endpoint remote secure network")],
-    desktopOnly: true,
-    localBackendManagementOnly: true,
+    searchTerms: [msg("easytier virtual lan subnet auto discovery peers zero pairing mesh")],
+  },
+  {
+    id: "public-gateway",
+    title: msg("Public gateway access"),
+    to: "/settings/access",
+    targetId: "easytier-mesh",
+    searchTerms: [msg("public ip gateway password mobile web remote control proxy")],
   },
   {
     id: "wsl-backend",
@@ -1407,7 +1404,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "t3-connect",
     localEnvironmentOnly: true,
-    title: msg("T3 Connect"),
+    title: msg("Relay"),
     to: "/settings/access",
     targetId: "connections-environment",
     searchTerms: [msg("managed tunnel cloud other devices remote tunnels limit t3 chat")],
@@ -1462,14 +1459,6 @@ export const SETTINGS_SEARCH_ITEMS = [
         "connections server backend local remote access administrative permissions scope pairing links qr code authorized clients sessions revoke endpoint",
       ),
     ],
-  },
-  {
-    id: "linked-environments",
-    peerLinksOnly: true,
-    title: msg("Linked environments"),
-    to: "/settings/connections",
-    targetId: "linked-environments",
-    searchTerms: [msg("link peer another machine vps agents work there handoff pairing code")],
   },
   {
     id: "remote-environments",
@@ -1679,7 +1668,6 @@ export function filterAvailableSettingsSearchItems(
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
-      (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
       (!item.fastWorktreeCheckoutOnly ||
         availability.hasFastWorktreeCheckoutEnvironment === true) &&
       (!item.agentFeedbackOnly || availability.hasAgentFeedbackEnvironment === true) &&

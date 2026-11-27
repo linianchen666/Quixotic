@@ -53,6 +53,11 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import {
+  isGatewayPasswordConfigured,
+  persistGatewayPassword,
+  verifyGatewayPassword,
+} from "../easytier/GatewayPassword.ts";
+import {
   MCP_APPROVAL_SUBJECT_PREFIX,
   PEER_LINK_PAIRING_SUBJECT_PREFIX,
 } from "../persistence/AuthPairingLinks.ts";
@@ -60,8 +65,12 @@ import { requestUrl } from "../requestUrl.ts";
 
 const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
-/** Sessions and pairing links T3 Connect minted for a device signed in to the linked account. */
+/** Sessions and pairing links self-hosted relay minted for a device signed in to the linked account. */
 export const CLOUD_CONNECT_SUBJECT = "cloud-connect";
+/** Sessions established automatically between peers on the same EasyTier virtual mesh. */
+export const EASYTIER_MESH_SUBJECT_PREFIX = "easytier-mesh";
+/** Sessions established with the Public Gateway access password. */
+export const GATEWAY_PASSWORD_SUBJECT = "gateway-password";
 
 export interface IssuedPairingLink {
   readonly id: string;
@@ -100,7 +109,7 @@ export interface McpClientSession {
   readonly sessionId: AuthSessionId;
   readonly label: string;
   readonly access: AuthMcpClientAccess;
-  /** Another T3 Code environment's link, whose work here stays within it. */
+  /** Another Quixotic environment's link, whose work here stays within it. */
   readonly peerLink: boolean;
   /** When a peer link's session ends unless it is used again; the linking side keeps this. */
   readonly linkExpiresAt?: DateTime.Utc;
@@ -362,7 +371,7 @@ export class ServerAuthConnectDevicesError extends Schema.TaggedError<ServerAuth
   },
 ) {
   override get message(): string {
-    return "Failed to update T3 Connect devices.";
+    return "Failed to update self-hosted relay devices.";
   }
 }
 
@@ -461,13 +470,13 @@ export const serverAuthInvalidRequestReason = (
 ): "invalid_scope" | "scope_not_granted" =>
   error._tag === "ServerAuthInvalidScopeError" ? "invalid_scope" : "scope_not_granted";
 
-/** The credential is fine, but the host has not approved this T3 Connect device yet. */
+/** The credential is fine, but the host has not approved this self-hosted relay device yet. */
 export class ServerAuthConnectApprovalPendingError extends Schema.TaggedError<ServerAuthConnectApprovalPendingError>()(
   "ServerAuthConnectApprovalPendingError",
   {},
 ) {
   override get message(): string {
-    return "This T3 Connect device is waiting for approval.";
+    return "This self-hosted relay device is waiting for approval.";
   }
 }
 
@@ -549,7 +558,7 @@ export class EnvironmentAuth extends Context.Service<
       ServerAuthInternalError | ManagedLimits.ManagedPolicyRefusedError
     >;
     /**
-     * The one-time credential T3 Connect hands a device. With approval required, an untrusted
+     * The one-time credential self-hosted relay hands a device. With approval required, an untrusted
      * device key gets one that waits for approval, and keeps it across retries.
      */
     readonly issueConnectCredential: (input: {
@@ -672,8 +681,27 @@ export class EnvironmentAuth extends Context.Service<
       AuthMcpClientAccess,
       ServerAuthMcpApprovalCodeError | ServerAuthInternalError
     >;
+    /** Issues (or replaces) a zero-pairing bearer session for a verified direct EasyTier peer. */
+    readonly issueEasyTierMeshSession: (
+      requestMetadata: AuthClientMetadata,
+    ) => Effect.Effect<AuthAccessTokenResult, ServerAuthInternalError>;
+    /** Issues (or replaces) a zero-pairing browser session cookie for a verified direct EasyTier peer. */
+    readonly issueEasyTierMeshBrowserSession: (
+      requestMetadata: AuthClientMetadata,
+      previousSessionToken?: string,
+    ) => Effect.Effect<
+      {
+        readonly response: AuthBrowserSessionResult;
+        readonly sessionToken: string;
+      },
+      ServerAuthInternalError
+    >;
+    readonly isGatewayPasswordConfigured: () => Effect.Effect<boolean>;
+    readonly setGatewayPassword: (
+      password: string | null,
+    ) => Effect.Effect<boolean, ServerAuthInternalError>;
   }
->()("t3/auth/EnvironmentAuth") {}
+>()("quixotic-cli/auth/EnvironmentAuth") {}
 
 type BootstrapExchangeResult = {
   readonly response: AuthBrowserSessionResult;
@@ -927,28 +955,44 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  const getSessionState: EnvironmentAuth["Service"]["getSessionState"] = (request) =>
-    authenticateRequest(request).pipe(
+  const checkGatewayPasswordConfigured = () =>
+    isGatewayPasswordConfigured(config, secretStore);
+
+  const currentDescriptor = () =>
+    checkGatewayPasswordConfigured().pipe(
       Effect.map(
-        (session) =>
-          ({
-            authenticated: true,
-            auth: descriptor,
-            ...authScopeResponse(session.scopes),
-            sessionMethod: session.method,
-            ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
-          }) satisfies AuthSessionState,
+        (gatewayPasswordEnabled): ServerAuthDescriptor => ({
+          ...descriptor,
+          ...(gatewayPasswordEnabled ? { gatewayPasswordEnabled: true } : {}),
+        }),
       ),
-      Effect.catchIf(isServerAuthCredentialError, () =>
-        Effect.succeed({
-          authenticated: false,
-          auth: descriptor,
-        } satisfies AuthSessionState),
-      ),
-      Effect.withSpan("EnvironmentAuth.getSessionState"),
     );
 
-  // T3 Connect credential issuance, DPoP exchanges and device revocation take turns. Two mints
+  const getSessionState: EnvironmentAuth["Service"]["getSessionState"] = Effect.fn(
+    "EnvironmentAuth.getSessionState",
+  )(function* (request) {
+    const resolvedDescriptor = yield* currentDescriptor();
+    const authResult = yield* authenticateRequest(request).pipe(Effect.result);
+    if (authResult._tag === "Success") {
+      const session = authResult.success;
+      return {
+        authenticated: true,
+        auth: resolvedDescriptor,
+        ...authScopeResponse(session.scopes),
+        sessionMethod: session.method,
+        ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
+      } satisfies AuthSessionState;
+    }
+    if (isServerAuthCredentialError(authResult.failure)) {
+      return {
+        authenticated: false,
+        auth: resolvedDescriptor,
+      } satisfies AuthSessionState;
+    }
+    return yield* authResult.failure;
+  });
+
+  // self-hosted relay credential issuance, DPoP exchanges and device revocation take turns. Two mints
   // at once would open two requests with one code, and a revoke landing between an exchange
   // spending its credential and trusting the key would be undone by that exchange.
   const connectTrustLock = yield* Semaphore.make(1);
@@ -1005,9 +1049,16 @@ export const make = Effect.gen(function* () {
             Effect.catchIf(SessionStore.isSessionCredentialInvalidError, () => Effect.void),
             Effect.mapError((cause) => new ServerAuthSessionCredentialValidationError({ cause })),
           );
-    const grant = yield* bootstrapCredentials
-      .consume(credential)
-      .pipe(Effect.mapError(toBootstrapExchangeError));
+    const matchedGatewayPassword = yield* verifyGatewayPassword(credential, config, secretStore);
+    const grant = matchedGatewayPassword
+      ? {
+          subject: GATEWAY_PASSWORD_SUBJECT,
+          scopes: AuthStandardClientScopes,
+          label: "Public gateway",
+        }
+      : yield* bootstrapCredentials
+          .consume(credential)
+          .pipe(Effect.mapError(toBootstrapExchangeError));
     const session = yield* issueUnlessOthersRevokedSince(
       revocationsAtStart,
       sessions
@@ -1040,27 +1091,48 @@ export const make = Effect.gen(function* () {
     PairingGrantStore.BootstrapGrant,
     "scopes" | "subject" | "label"
   > & {
-    readonly method: PairingGrantStore.BootstrapGrant["method"] | "reusable-dev-token";
+    readonly method:
+      | PairingGrantStore.BootstrapGrant["method"]
+      | "reusable-dev-token"
+      | "gateway-password";
   };
-  const resolveBootstrapGrant = (
+  const resolveBootstrapGrant = Effect.fn("EnvironmentAuth.resolveBootstrapGrant")(function* (
     credential: string,
     input?: {
       readonly proofKeyThumbprint?: string;
       readonly requestedScopes?: ReadonlyArray<AuthEnvironmentScope>;
       readonly requiredScopes?: ReadonlyArray<AuthEnvironmentScope>;
       readonly allowedSubject?: string;
-      /** Shown to approvers when the credential waits on T3 Connect device approval. */
+      /** Shown to approvers when the credential waits on self-hosted relay device approval. */
       readonly requestMetadata?: AuthClientMetadata;
     },
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     ResolvedBootstrapGrant,
     | ServerAuthInvalidCredentialError
     | ServerAuthInternalError
     | ServerAuthScopeNotGrantedError
     | ServerAuthConnectApprovalPendingError
-  > => {
+  > {
+    if (
+      input?.allowedSubject === undefined &&
+      (yield* verifyGatewayPassword(credential, config, secretStore))
+    ) {
+      const standardScopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes;
+      if (
+        input?.requiredScopes !== undefined &&
+        !input.requiredScopes.every((scope) => standardScopes.includes(scope))
+      ) {
+        return yield* new ServerAuthScopeNotGrantedError({});
+      }
+      return {
+        method: "gateway-password",
+        scopes: AuthStandardClientScopes,
+        subject: GATEWAY_PASSWORD_SUBJECT,
+        label: "Public gateway",
+      } satisfies ResolvedBootstrapGrant;
+    }
     if (!devAuth?.matches(credential)) {
-      return bootstrapCredentials.consume(credential, input).pipe(
+      return yield* bootstrapCredentials.consume(credential, input).pipe(
         Effect.catchTags({
           BootstrapCredentialConnectApprovalPendingError: (pending) =>
             recordConnectRequest(pending.pairingLinkId, input?.requestMetadata).pipe(
@@ -1077,7 +1149,7 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
-    return sessions.verify(credential).pipe(
+    return yield* sessions.verify(credential).pipe(
       mapSessionVerificationErrors,
       Effect.filterOrFail(
         (session) =>
@@ -1094,7 +1166,7 @@ export const make = Effect.gen(function* () {
           }) satisfies ResolvedBootstrapGrant,
       ),
     );
-  };
+  });
 
   const toAccessTokenResult = (session: SessionStore.IssuedSession) =>
     DateTime.now.pipe(
@@ -1141,7 +1213,7 @@ export const make = Effect.gen(function* () {
           requestMetadata,
           ...(requestedScopes !== undefined ? { requestedScopes } : {}),
         }).pipe(
-          // Every T3 Connect key that gets in is remembered, so turning approval on later
+          // Every self-hosted relay key that gets in is remembered, so turning approval on later
           // keeps the devices already in use and lists them for review.
           Effect.tap((grant) =>
             grant.subject === CLOUD_CONNECT_SUBJECT && input?.proofKeyThumbprint
@@ -1159,7 +1231,7 @@ export const make = Effect.gen(function* () {
               if (grantedScopes.length === 0) {
                 return yield* new ServerAuthScopeNotGrantedError({});
               }
-              // Only plain pairing links renew. T3 Connect, CLI, desktop and peer sessions keep
+              // Only plain pairing links renew. self-hosted relay, CLI, desktop and peer sessions keep
               // their own lifetimes, so unlinking Connect or rotating a credential still cuts off.
               const renewable =
                 input?.proofKeyThumbprint !== undefined &&
@@ -1314,7 +1386,7 @@ export const make = Effect.gen(function* () {
       subject: CLOUD_CONNECT_SUBJECT,
       // Long enough for someone to notice the request and approve it.
       ttl: mustWait ? Duration.minutes(10) : Duration.minutes(2),
-      label: "T3 Connect",
+      label: "Self-hosted relay",
       proofKeyThumbprint,
       ...(mustWait ? { requiresConnectApproval: true } : {}),
     });
@@ -1489,7 +1561,7 @@ export const make = Effect.gen(function* () {
   const revokeClient: EnvironmentAuth["Service"]["revokeClient"] = Effect.fn(
     "EnvironmentAuth.revokeClient",
   )(function* (sessionId) {
-    // A T3 Connect device would otherwise mint itself a new session right away.
+    // A self-hosted relay device would otherwise mint itself a new session right away.
     return yield* Option.match(yield* proofKeyOf(sessionId), {
       onNone: () => revokeSession(sessionId),
       onSome: revokeConnectDevice,
@@ -1752,6 +1824,74 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.consumeMcpApprovalCode"),
     );
 
+  const issueEasyTierMeshSession: EnvironmentAuth["Service"]["issueEasyTierMeshSession"] =
+    Effect.fn("EnvironmentAuth.issueEasyTierMeshSession")(function* (requestMetadata) {
+      const peerKey = requestMetadata.ipAddress ?? "peer";
+      const subject = `${EASYTIER_MESH_SUBJECT_PREFIX}:${peerKey}`;
+      const issued = yield* sessions
+        .issue({
+          method: "bearer-access-token",
+          subject,
+          scopes: AuthStandardClientScopes,
+          ttl: Duration.days(30),
+          replaceActiveForSubjectAndMethod: true,
+          client: {
+            ...requestMetadata,
+            label: requestMetadata.label ?? `EasyTier (${peerKey})`,
+          },
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
+          ),
+        );
+      return yield* toAccessTokenResult(issued);
+    });
+
+  const issueEasyTierMeshBrowserSession: EnvironmentAuth["Service"]["issueEasyTierMeshBrowserSession"] =
+    Effect.fn("EnvironmentAuth.issueEasyTierMeshBrowserSession")(function* (
+      requestMetadata,
+      previousSessionToken,
+    ) {
+      const previousSession =
+        previousSessionToken === undefined
+          ? undefined
+          : yield* sessions.verify(previousSessionToken).pipe(
+              Effect.catchIf(SessionStore.isSessionCredentialInvalidError, () => Effect.void),
+              Effect.mapError((cause) => new ServerAuthSessionCredentialValidationError({ cause })),
+            );
+      const peerKey = requestMetadata.ipAddress ?? "peer";
+      const subject = `${EASYTIER_MESH_SUBJECT_PREFIX}:${peerKey}`;
+      const session = yield* sessions
+        .issue({
+          method: "browser-session-cookie",
+          subject,
+          scopes: AuthStandardClientScopes,
+          ...(previousSession?.method === "browser-session-cookie"
+            ? { replaceSessionId: previousSession.sessionId }
+            : { replaceActiveForSubjectAndMethod: true }),
+          client: {
+            ...requestMetadata,
+            label: requestMetadata.label ?? `EasyTier Browser (${peerKey})`,
+          },
+        })
+        .pipe(Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })));
+      return {
+        response: {
+          authenticated: true,
+          ...authScopeResponse(session.scopes),
+          sessionMethod: session.method,
+          expiresAt: DateTime.toUtc(session.expiresAt),
+        } satisfies AuthBrowserSessionResult,
+        sessionToken: session.token,
+      };
+    });
+
+  const setGatewayPassword: EnvironmentAuth["Service"]["setGatewayPassword"] = (password) =>
+    persistGatewayPassword(password, secretStore).pipe(
+      Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })),
+    );
+
   yield* revokePairedClientsThePolicyDisallows(managedPolicy, {
     sessions,
     pairingLinks: bootstrapCredentials,
@@ -1759,7 +1899,7 @@ export const make = Effect.gen(function* () {
 
   return EnvironmentAuth.of({
     getDescriptor: Effect.fn("EnvironmentAuth.getDescriptor")(function () {
-      return Effect.succeed(descriptor);
+      return currentDescriptor();
     }),
     getSessionState,
     createBrowserSession,
@@ -1792,6 +1932,10 @@ export const make = Effect.gen(function* () {
     otherSessionRevocationCount: Ref.get(otherSessionRevocations),
     issueMcpClientSession,
     consumeMcpApprovalCode,
+    issueEasyTierMeshSession,
+    issueEasyTierMeshBrowserSession,
+    isGatewayPasswordConfigured: checkGatewayPasswordConfigured,
+    setGatewayPassword,
   });
 });
 

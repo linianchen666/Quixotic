@@ -1,6 +1,7 @@
 import type { BrowserSearchEngine } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { joinBaseUrlPath } from "./advertisedEndpoint.ts";
 import { isLocalLoopbackHost } from "./hostClassification.ts";
 
 const TAB_ID_PREFIX = "tab_";
@@ -11,10 +12,10 @@ export function previewPdfAssetUrl(rawUrl: string, httpBaseUrl: string | null): 
   try {
     const url = new URL(rawUrl);
     const baseUrl = new URL(httpBaseUrl);
+    const assetPathMatch = /^(?:\/mesh\/[^/]+)?(\/api\/assets\/.+\.pdf)$/i.exec(url.pathname);
     if (
       (url.protocol !== "http:" && url.protocol !== "https:") ||
-      !url.pathname.startsWith("/api/assets/") ||
-      !/\.pdf$/i.test(url.pathname)
+      assetPathMatch === null
     ) {
       return null;
     }
@@ -29,7 +30,7 @@ export function previewPdfAssetUrl(rawUrl: string, httpBaseUrl: string | null): 
     }
     // The browser may run on the host's loopback address. Fetch signed bytes
     // through this client's environment connection, including remote routes.
-    return new URL(`${url.pathname}${url.search}${url.hash}`, baseUrl).href;
+    return joinBaseUrlPath(httpBaseUrl, `${assetPathMatch[1]!}${url.search}${url.hash}`);
   } catch {
     return null;
   }

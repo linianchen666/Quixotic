@@ -1,3 +1,7 @@
+import {
+  DATA_DIRECTORY_POINTER_FILENAME,
+  parseDataDirectoryPointer,
+} from "@t3tools/shared/dataDirectory";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -52,10 +56,23 @@ const isDevelopmentEnvironment = (env: NodeJS.ProcessEnv): boolean =>
 function resolveEarlyDesktopSettingsPath(input: EarlyDesktopSettingsInput): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const isDevelopment = isDevelopmentEnvironment(input.env);
+  let configuredBaseDir: Option.Option<string> = Option.none();
+  if (!isDevelopment && trimNonEmpty(input.env.T3CODE_HOME) === null) {
+    try {
+      const pointerPath = input.joinPath(input.homeDirectory, DATA_DIRECTORY_POINTER_FILENAME);
+      const parsed = parseDataDirectoryPointer(input.readFileString(pointerPath));
+      if (parsed !== null) {
+        configuredBaseDir = Option.some(parsed.baseDir);
+      }
+    } catch {
+      // Missing or unreadable pointer file: fall back to default discovery.
+    }
+  }
   const baseDir = resolveDesktopBaseDir({
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
+    configuredBaseDir,
     ...(!isDevelopment && input.hasState ? { hasState: input.hasState } : {}),
   });
   const stateDir = resolveDesktopStateDir({

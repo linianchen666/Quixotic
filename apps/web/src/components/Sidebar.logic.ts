@@ -234,15 +234,20 @@ export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
 }
 
+const sectionBySidebarMarker: Partial<Record<SidebarListMarker, SidebarSection>> = {
+  "working-header": "working",
+  "pinned-header": "pinned",
+  "pinned-divider": "active",
+  "snoozed-header": "snoozed",
+  "settled-header": "settled",
+};
+
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
   for (let i = 0; i < index && i < items.length; i += 1) {
     const item = items[i]!;
     if (item.kind !== "marker") continue;
-    if (item.marker === "pinned-divider") section = "active";
-    else if (item.marker === "working-header") section = "working";
-    else if (item.marker === "snoozed-header") section = "snoozed";
-    else if (item.marker === "settled-header") section = "settled";
+    section = sectionBySidebarMarker[item.marker] ?? section;
   }
   return section;
 }
@@ -261,24 +266,24 @@ export function resolveSidebarDropTarget(
   const activeIndex = items.findIndex((item) => sidebarListItemId(item) === activeKey);
   const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
   if (activeIndex === -1 || overIndex === -1 || items[activeIndex]?.kind !== "thread") return null;
+  if (overId === sidebarMarkerId("working-header")) return null;
   const moved = items.filter((_, index) => index !== activeIndex);
-  moved.splice(overIndex, 0, items[activeIndex]!);
-  const section = sectionAtSidebarSlot(moved, overIndex);
+  // Dropping on the pinned header inserts into its section, below Working.
+  const destination =
+    overId === sidebarMarkerId("pinned-header") && activeIndex > overIndex
+      ? overIndex + 1
+      : overIndex;
+  moved.splice(destination, 0, items[activeIndex]!);
+  const section = sectionAtSidebarSlot(moved, destination);
   if (section === "working" || section === "snoozed") return null;
   const pinnedOrder: string[] = [];
   const activeOrder: string[] = [];
   let currentSection: SidebarSection = "pinned";
   for (const item of moved) {
     if (item.kind === "marker") {
-      if (item.marker === "pinned-divider") currentSection = "active";
-      else if (
-        item.marker === "working-header" ||
-        item.marker === "snoozed-header" ||
-        item.marker === "settled-header"
-      )
-        break;
+      currentSection = sectionBySidebarMarker[item.marker] ?? currentSection;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
-    else activeOrder.push(item.key);
+    else if (currentSection === "active") activeOrder.push(item.key);
   }
   return { section, pinnedOrder, activeOrder };
 }

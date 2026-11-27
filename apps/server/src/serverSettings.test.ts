@@ -450,6 +450,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("persists pairing addresses independently and allows either one to be cleared", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const easyTierPairingAddress = "http://10.126.126.20:3773";
+      const publicPairingAddress = "https://linux.example.com";
+
+      const saved = yield* service.getSettings;
+      assert.equal(saved.easyTierPairingAddress, "");
+      assert.equal(saved.publicPairingAddress, "");
+      yield* service.updateSettings({ easyTierPairingAddress });
+      yield* service.updateSettings({ publicPairingAddress });
+
+      const readPersisted = fs
+        .readFileString(config.settingsPath)
+        .pipe(Effect.flatMap(decodeServerSettingsJson));
+      const persisted = yield* readPersisted;
+      assert.equal(persisted.easyTierPairingAddress, easyTierPairingAddress);
+      assert.equal(persisted.publicPairingAddress, publicPairingAddress);
+
+      yield* service.updateSettings({ easyTierPairingAddress: "" });
+      const cleared = yield* readPersisted;
+      assert.equal(cleared.easyTierPairingAddress, "");
+      assert.equal(cleared.publicPairingAddress, publicPairingAddress);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("keeps an external settings edit that the watcher has not reloaded yet", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

@@ -39,13 +39,3 @@ export const localeStaticPaths = () =>
     params: { locale: entry.path || undefined },
     props: { locale: entry.code as Locale },
   }));
-
-/** Splits `"On ARM? {deb} or {appimage}."` so callers can render each `{key}` as markup. */
-export const templateParts = (template: string): Array<string | { key: string }> =>
-  template
-    .split(/(\{\w+\})/)
-    .filter(Boolean)
-    .map((part) => (/^\{\w+\}$/.test(part) ? { key: part.slice(1, -1) } : part));
-
-export const fillTemplate = (template: string, values: Record<string, string>): string =>
-  template.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match);

@@ -1,5 +1,3 @@
-import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
-
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "@t3tools/shared/remote";
 
 export interface HostedPairingRequest {
@@ -10,8 +8,31 @@ export interface HostedPairingRequest {
 
 export type HostedAppChannel = "latest" | "nightly";
 
-export function configuredHostedAppUrl(): string {
-  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || DEFAULT_HOSTED_APP_URL;
+function httpOrigin(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function configuredHostedAppUrl(): string | undefined {
+  return httpOrigin(import.meta.env.VITE_HOSTED_APP_URL?.trim());
+}
+
+export function appLinkOrigin(): string | undefined {
+  return (
+    configuredHostedAppUrl() ??
+    (typeof window === "undefined" || window.desktopBridge
+      ? undefined
+      : httpOrigin(window.location.href))
+  );
+}
+
+export function hostedAppChannelRouter(): string | undefined {
+  return httpOrigin(import.meta.env.VITE_HOSTED_APP_CHANNEL_ROUTER?.trim());
 }
 
 function configuredBackendUrl(): string {
@@ -21,14 +42,6 @@ function configuredBackendUrl(): string {
 function configuredHostedAppChannel(): HostedAppChannel | null {
   const channel = import.meta.env.VITE_HOSTED_APP_CHANNEL?.trim().toLowerCase();
   return channel === "latest" || channel === "nightly" ? channel : null;
-}
-
-function originFromUrl(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
 }
 
 export function isHostedStaticApp(url?: URL): boolean {
@@ -44,8 +57,8 @@ export function isHostedStaticApp(url?: URL): boolean {
     return false;
   }
 
-  const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && (url ?? new URL(window.location.href)).origin === hostedOrigin;
+  const hostedOrigin = configuredHostedAppUrl();
+  return hostedOrigin !== undefined && (url ?? new URL(window.location.href)).origin === hostedOrigin;
 }
 
 export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {
@@ -72,8 +85,10 @@ export function buildHostedPairingUrl(input: {
   readonly host: string;
   readonly token: string;
   readonly label?: string | null;
-}): string {
-  const url = new URL("/pair", configuredHostedAppUrl());
+}): string | null {
+  const hostedAppUrl = configuredHostedAppUrl();
+  if (hostedAppUrl === undefined) return null;
+  const url = new URL("/pair", hostedAppUrl);
   url.searchParams.set("host", input.host);
 
   const label = input.label?.trim();
@@ -86,8 +101,9 @@ export function buildHostedPairingUrl(input: {
 
 export function buildHostedChannelSelectionUrl(input: {
   readonly channel: HostedAppChannel;
+  readonly router: string;
 }): string {
-  const url = new URL("/__t3code/channel", configuredHostedAppUrl());
+  const url = new URL("/__t3code/channel", input.router);
   url.searchParams.set("channel", input.channel);
   return url.toString();
 }

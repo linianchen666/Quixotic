@@ -1384,6 +1384,58 @@ export const CloudSpeechCredentials = Schema.Struct({
   openrouter: CloudSpeechCredential,
 });
 
+export type DevicePairingAddressKind = "easyTier" | "public";
+
+export function normalizeDevicePairingAddress(
+  kind: DevicePairingAddressKind,
+  input: string,
+): string | null {
+  const address = input.trim();
+  if (!address || /[\s\\?#]/u.test(address)) return null;
+  let url: URL;
+  try {
+    const hasScheme = address.includes("://");
+    const isIpOrExplicitNonHttpsPort =
+      /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[\da-f:.]+\])(?::\d+)?(?:\/|$)/iu.test(address) ||
+      /^[^/?#:@]+:(?!443(?:\/|$))\d+(?:\/|$)/u.test(address);
+    const defaultScheme = kind === "public" && !isIpOrExplicitNonHttpsPort ? "https" : "http";
+    url = new URL(hasScheme ? address : `${defaultScheme}://${address}`);
+  } catch {
+    return null;
+  }
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/"
+  ) {
+    return null;
+  }
+  const hostname = url.hostname.replace(/\.$/u, "");
+  if (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "[::]" ||
+    hostname === "[::1]" ||
+    hostname === "0.0.0.0" ||
+    hostname.startsWith("127.")
+  ) {
+    return null;
+  }
+  return url.origin;
+}
+
+const devicePairingAddress = (kind: DevicePairingAddressKind) =>
+  TrimmedString.check(
+    Schema.makeFilter((value) =>
+      value === "" || normalizeDevicePairingAddress(kind, value) !== null
+        ? undefined
+        : "Expected a device pairing address",
+    ),
+  );
+const EasyTierPairingAddress = devicePairingAddress("easyTier");
+const PublicPairingAddress = devicePairingAddress("public");
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1414,6 +1466,10 @@ export const ServerSettings = Schema.Struct({
   ),
   /** Holds an OS sleep inhibitor while any run is active; closing a laptop lid still sleeps it. */
   keepAwakeWhileAgentsWork: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  easyTierPairingAddress: EasyTierPairingAddress.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  publicPairingAddress: PublicPairingAddress.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** New T3 Connect device keys wait for approval from someone already trusted here. */
   requireConnectDeviceApproval: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -1885,6 +1941,8 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
+  easyTierPairingAddress: Schema.optionalKey(EasyTierPairingAddress),
+  publicPairingAddress: Schema.optionalKey(PublicPairingAddress),
   requireConnectDeviceApproval: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enablePreviewTunnel: Schema.optionalKey(Schema.Boolean),
@@ -2048,7 +2106,12 @@ export function requiredScopesForServerSettingsPatch(
   let changesAccess = false;
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
-    if (key === "requireConnectDeviceApproval" || key === "enablePreviewTunnel") {
+    if (
+      key === "requireConnectDeviceApproval" ||
+      key === "enablePreviewTunnel" ||
+      key === "easyTierPairingAddress" ||
+      key === "publicPairingAddress"
+    ) {
       changesAccess = true;
     } else if (
       key === "providers" ||

@@ -163,7 +163,7 @@ export class Workflows extends Context.Service<
      */
     readonly sweep: Effect.Effect<void>;
   }
->()("t3/workflows/Workflows") {}
+>()("quixotic-cli/workflows/Workflows") {}
 
 const refuse = Effect.fn("Workflows.disabled")(function* () {
   return yield* new WorkflowInputError({

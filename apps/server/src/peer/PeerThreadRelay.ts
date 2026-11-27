@@ -56,7 +56,7 @@ export class PeerThreadRelay extends Context.Service<
       input: PeerLinkThreadItemInput,
     ) => Effect.Effect<OrchestrationV2GetTurnItemResult, PeerLinkThreadReadError>;
   }
->()("t3/peer/PeerThreadRelay") {}
+>()("quixotic-cli/peer/PeerThreadRelay") {}
 
 const decodeStreamItem = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2ThreadStreamItem)),
@@ -103,7 +103,7 @@ const fromStatus = (status: number, code: string | undefined, label: string) => 
     return new PeerLinkThreadReadError({
       reason: "incompatible",
       label,
-      message: `${label} runs a T3 Code version that does not share its threads over a link. Update it to read its threads from here.`,
+      message: `${label} runs a Quixotic version that does not share its threads over a link. Update it to read its threads from here.`,
     });
   }
   if (status === 401 || status === 403) {

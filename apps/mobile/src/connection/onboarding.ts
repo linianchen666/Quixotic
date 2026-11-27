@@ -28,6 +28,27 @@ export const connectPairingUrl = createRuntimeCommand(connectionAtomRuntime, {
     ),
 });
 
+export const connectGatewayOrEasyTier = createRuntimeCommand(connectionAtomRuntime, {
+  label: "mobile:connection:connect-gateway-or-easytier",
+  scheduler: onboardingScheduler,
+  concurrency: {
+    mode: "singleFlight",
+    key: (input: {
+      readonly host: string;
+      readonly password?: string;
+      readonly expectedEnvironmentId?: EnvironmentId;
+    }) => JSON.stringify([input.host, input.expectedEnvironmentId ?? null]),
+  },
+  execute: (input: {
+    readonly host: string;
+    readonly password?: string;
+    readonly expectedEnvironmentId?: EnvironmentId;
+  }) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.registerGatewayOrEasyTier(input)),
+    ),
+});
+
 export const updateBearerConnection = createRuntimeCommand(connectionAtomRuntime, {
   label: "mobile:connection:update-bearer",
   scheduler: onboardingScheduler,

@@ -3,9 +3,7 @@ import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -27,6 +25,16 @@ const lanNetworkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces = {
   en0: [
     {
       address: "192.168.1.20",
+      family: "IPv4",
+      internal: false,
+    },
+  ],
+};
+
+const easyTierNetworkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces = {
+  tun0: [
+    {
+      address: "10.126.126.10",
       family: "IPv4",
       internal: false,
     },
@@ -153,26 +161,27 @@ const withHarness = <A, E, R>(
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped);
 
 describe("DesktopServerExposure", () => {
-  it.effect("uses cached Tailscale identity to exclude another VPN's pairing address", () => {
+  it.effect("advertises EasyTier ahead of LAN while excluding Clash fake-IP and Tailscale", () => {
     let statusReads = 0;
     return withHarness(
       {
         ...lanNetworkInterfaces,
-        pvpnksintrf1: [{ address: "100.85.0.1", family: "IPv4", internal: false }],
-        vpn0: [{ address: "100.74.126.34", family: "IPv4", internal: false }],
+        ...easyTierNetworkInterfaces,
+        mihomo0: [{ address: "198.18.0.1", family: "IPv4", internal: false }],
+        tailscale0: [{ address: "100.74.126.34", family: "IPv4", internal: false }],
       },
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
-        yield* serverExposure.setMode("network-accessible");
+        const state = yield* serverExposure.configureFromSettings({ port: 4173 });
+        assert.equal(state.mode, "network-accessible");
+        assert.equal(state.advertisedHost, "10.126.126.10");
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
         assert.deepEqual(
           endpoints.map((endpoint) => endpoint.httpBaseUrl),
-          ["http://127.0.0.1:4173/", "http://192.168.1.20:4173/", "http://100.74.126.34:4173/"],
+          ["http://127.0.0.1:4173/", "http://10.126.126.10:4173/", "http://192.168.1.20:4173/"],
         );
-        assert.deepEqual(yield* serverExposure.getAdvertisedEndpoints, endpoints);
-        assert.equal(statusReads, 1);
+        assert.equal(statusReads, 0);
       }),
       {},
       layerMockSpawner(`{"Self":{"TailscaleIPs":["100.74.126.34"]}}`, () => {
@@ -216,15 +225,10 @@ describe("DesktopServerExposure", () => {
         const backendConfig = yield* serverExposure.backendConfig;
         assert.equal(backendConfig.bindHost, "127.0.0.1");
         assert.isFalse(backendConfig.tailscaleServeEnabled);
-        // Choosing them again while the policy applies does not widen the backend either.
         yield* serverExposure.setMode("network-accessible");
         yield* serverExposure.setTailscaleServeEnabled({ enabled: true });
         assert.equal((yield* serverExposure.backendConfig).bindHost, "127.0.0.1");
         assert.isFalse((yield* serverExposure.backendConfig).tailscaleServeEnabled);
-        // The saved choice returns once the policy allows it.
-        const saved = yield* settings.get;
-        assert.equal(saved.serverExposureMode, "network-accessible");
-        assert.isTrue(saved.tailscaleServeEnabled);
       }),
       {},
       undefined,
@@ -237,7 +241,7 @@ describe("DesktopServerExposure", () => {
     ),
   );
 
-  it.effect("persists network-accessible mode and updates backend binding state", () =>
+  it.effect("persists mode transitions and updates backend binding state", () =>
     withHarness(
       lanNetworkInterfaces,
       Effect.gen(function* () {
@@ -246,6 +250,10 @@ describe("DesktopServerExposure", () => {
 
         yield* settings.load;
         yield* serverExposure.configureFromSettings({ port: 4173 });
+
+        const localChange = yield* serverExposure.setMode("local-only");
+        assert.equal(localChange.requiresRelaunch, true);
+        assert.equal((yield* serverExposure.backendConfig).bindHost, "127.0.0.1");
 
         const change = yield* serverExposure.setMode("network-accessible");
         assert.equal(change.requiresRelaunch, true);
@@ -267,7 +275,7 @@ describe("DesktopServerExposure", () => {
     ),
   );
 
-  it.effect("advertises the Wi-Fi or Ethernet address ahead of bridges and tunnels", () =>
+  it.effect("advertises EasyTier tunnel ahead of Wi-Fi/Ethernet and bridges", () =>
     withHarness(
       {
         bridge0: [{ address: "192.168.2.1", family: "IPv4", internal: false }],
@@ -276,10 +284,8 @@ describe("DesktopServerExposure", () => {
       },
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
-
-        const change = yield* serverExposure.setMode("network-accessible");
-        assert.equal(change.state.advertisedHost, "192.168.1.20");
+        const state = yield* serverExposure.configureFromSettings({ port: 4173 });
+        assert.equal(state.advertisedHost, "10.8.0.2");
       }),
     ),
   );
@@ -312,7 +318,7 @@ describe("DesktopServerExposure", () => {
     );
   });
 
-  it.effect("persists tailscale serve preferences atomically and reports no-op updates", () =>
+  it.effect("keeps Tailscale Serve disabled as a no-op", () =>
     withHarness(
       emptyNetworkInterfaces,
       Effect.gen(function* () {
@@ -322,104 +328,37 @@ describe("DesktopServerExposure", () => {
         yield* settings.load;
         yield* serverExposure.configureFromSettings({ port: 4173 });
 
-        const changed = yield* serverExposure.setTailscaleServeEnabled({
+        const result = yield* serverExposure.setTailscaleServeEnabled({
           enabled: true,
           port: 8443,
         });
-        assert.equal(changed.requiresRelaunch, true);
-        assert.equal(changed.state.tailscaleServeEnabled, true);
-        assert.equal(changed.state.tailscaleServePort, 8443);
-
-        const unchanged = yield* serverExposure.setTailscaleServeEnabled({
-          enabled: true,
-          port: 8443,
-        });
-        assert.equal(unchanged.requiresRelaunch, false);
-
-        const persisted = yield* settings.get;
-        assert.equal(persisted.tailscaleServeEnabled, true);
-        assert.equal(persisted.tailscaleServePort, 8443);
+        assert.equal(result.requiresRelaunch, false);
+        assert.equal(result.state.tailscaleServeEnabled, false);
       }),
     ),
   );
 
-  it.effect("keeps a Tailscale Serve change made while a mode change is saving", () =>
-    Effect.gen(function* () {
-      const modeWriteStarted = yield* Deferred.make<void>();
-      const releaseModeWrite = yield* Deferred.make<void>();
-      const settingsLayer = Layer.effect(
-        DesktopAppSettings.DesktopAppSettings,
-        Effect.gen(function* () {
-          const settings = yield* DesktopAppSettings.DesktopAppSettings;
-          return DesktopAppSettings.DesktopAppSettings.of({
-            ...settings,
-            setServerExposureMode: (mode) =>
-              Deferred.succeed(modeWriteStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseModeWrite)),
-                Effect.andThen(settings.setServerExposureMode(mode)),
-              ),
-          });
-        }),
-      ).pipe(Layer.provide(DesktopAppSettings.layerTest()));
-
-      return yield* withHarness(
-        lanNetworkInterfaces,
-        Effect.gen(function* () {
-          const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-          yield* serverExposure.configureFromSettings({ port: 4173 });
-
-          const modeChange = yield* serverExposure
-            .setMode("network-accessible")
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Deferred.await(modeWriteStarted);
-          const tailscaleChange = yield* serverExposure
-            .setTailscaleServeEnabled({ enabled: true, port: 8443 })
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Deferred.succeed(releaseModeWrite, undefined);
-          yield* Fiber.join(modeChange);
-          yield* Fiber.join(tailscaleChange);
-
-          const state = yield* serverExposure.getState;
-          assert.equal(state.mode, "network-accessible");
-          assert.equal(state.tailscaleServeEnabled, true);
-          assert.equal(state.tailscaleServePort, 8443);
-        }),
-        {},
-        undefined,
-        settingsLayer,
-      );
-    }),
-  );
-
-  it.effect("keeps LAN and Tailscale endpoints distinct when Tailscale is enumerated first", () =>
-    withHarness(
-      { ...tailnetNetworkInterfaces, ...lanNetworkInterfaces },
-      Effect.gen(function* () {
-        const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        yield* serverExposure.configureFromSettings({ port: 4173 });
-        yield* serverExposure.setMode("network-accessible");
-
-        const endpoints = yield* serverExposure.getAdvertisedEndpoints;
-        assert.deepEqual(
-          endpoints.map((endpoint) => endpoint.httpBaseUrl),
-          ["http://127.0.0.1:4173/", "http://192.168.1.20:4173/", "http://100.90.1.2:4173/"],
-        );
-      }),
-    ),
-  );
-
-  it.effect("keeps Tailscale-only hosts network-accessible", () =>
+  it.effect("ignores Tailscale-only interfaces and keeps EasyTier-only hosts network-accessible", () =>
     withHarness(
       tailnetNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-        const settings = yield* DesktopAppSettings.DesktopAppSettings;
-        yield* settings.setServerExposureMode("network-accessible");
+        const state = yield* serverExposure.configureFromSettings({ port: 4173 });
+        assert.equal(state.mode, "local-only");
+        assert.equal((yield* serverExposure.backendConfig).bindHost, "127.0.0.1");
+      }),
+    ),
+  );
 
+  it.effect("keeps EasyTier-only hosts network-accessible and advertises the EasyTier endpoint", () =>
+    withHarness(
+      easyTierNetworkInterfaces,
+      Effect.gen(function* () {
+        const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
         const state = yield* serverExposure.configureFromSettings({ port: 4173 });
         assert.equal(state.mode, "network-accessible");
-        assert.equal(state.advertisedHost, null);
-        assert.equal(state.endpointUrl, null);
+        assert.equal(state.advertisedHost, "10.126.126.10");
+        assert.equal(state.endpointUrl, "http://10.126.126.10:4173");
         assert.equal((yield* serverExposure.backendConfig).bindHost, "0.0.0.0");
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
@@ -427,92 +366,32 @@ describe("DesktopServerExposure", () => {
           endpoints.map((endpoint) => [endpoint.reachability, endpoint.httpBaseUrl]),
           [
             ["loopback", "http://127.0.0.1:4173/"],
-            ["private-network", "http://100.90.1.2:4173/"],
+            ["private-network", "http://10.126.126.10:4173/"],
           ],
         );
       }),
     ),
   );
 
-  it.effect(
-    "refreshes Tailscale status when addresses change and caches unchanged addresses",
-    () => {
-      const networkInterfaces: Record<
-        string,
-        readonly DesktopNetworkInterfaces.DesktopNetworkInterfaceInfo[] | undefined
-      > = { ...lanNetworkInterfaces };
-      let statusJson = "{}";
-      let statusReads = 0;
-
-      return withHarness(
-        networkInterfaces,
-        Effect.gen(function* () {
-          const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-          yield* serverExposure.configureFromSettings({ port: 4173 });
-          yield* serverExposure.setMode("network-accessible");
-
-          const initial = yield* serverExposure.getAdvertisedEndpoints;
-          assert.deepEqual(
-            initial.map((endpoint) => endpoint.httpBaseUrl),
-            ["http://127.0.0.1:4173/", "http://192.168.1.20:4173/"],
-          );
-          assert.equal(statusReads, 1);
-
-          for (const [address, dnsName] of [
-            ["100.90.1.2", "desktop.tail.ts.net"],
-            ["100.90.1.3", "desktop.other-tail.ts.net"],
-          ] as const) {
-            networkInterfaces.vpn0 = [{ address, family: "IPv4", internal: false }];
-            statusJson = JSON.stringify({
-              Self: { DNSName: `${dnsName}.`, TailscaleIPs: [address] },
-            });
-            const previousReads = statusReads;
-
-            const endpoints = yield* serverExposure.getAdvertisedEndpoints;
-            assert.deepEqual(
-              endpoints.map((endpoint) => endpoint.httpBaseUrl),
-              [
-                "http://127.0.0.1:4173/",
-                "http://192.168.1.20:4173/",
-                `http://${address}:4173/`,
-                `https://${dnsName}/`,
-              ],
-            );
-            assert.equal(statusReads, previousReads + 1);
-            assert.deepEqual(yield* serverExposure.getAdvertisedEndpoints, endpoints);
-            assert.equal(statusReads, previousReads + 1);
-          }
-        }),
-        {},
-        layerMockSpawner(
-          () => statusJson,
-          () => {
-            statusReads += 1;
-          },
-        ),
-      );
-    },
-  );
-
-  it.effect("preserves explicit Tailscale exposure overrides", () =>
+  it.effect("preserves explicit LAN and HTTPS exposure overrides", () =>
     withHarness(
       lanNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
         yield* serverExposure.configureFromSettings({ port: 4173 });
-        const change = yield* serverExposure.setMode("network-accessible");
+        const state = yield* serverExposure.getState;
 
-        assert.equal(change.state.advertisedHost, "100.90.1.2");
-        assert.equal(change.state.endpointUrl, "http://100.90.1.2:4173");
+        assert.equal(state.advertisedHost, "10.126.126.10");
+        assert.equal(state.endpointUrl, "http://10.126.126.10:4173");
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
         assert.deepEqual(
           endpoints.map((endpoint) => endpoint.httpBaseUrl),
-          ["http://127.0.0.1:4173/", "http://100.90.1.2:4173/", "https://public.example.test/"],
+          ["http://127.0.0.1:4173/", "http://10.126.126.10:4173/", "https://public.example.test/"],
         );
       }),
       {
-        T3CODE_DESKTOP_LAN_HOST: "100.90.1.2",
+        T3CODE_DESKTOP_LAN_HOST: "10.126.126.10",
         T3CODE_DESKTOP_HTTPS_ENDPOINTS: "https://public.example.test",
       },
     ),

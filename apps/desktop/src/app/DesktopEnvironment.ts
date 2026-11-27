@@ -22,6 +22,10 @@ import {
   resolveDesktopStateDir,
 } from "./DesktopStatePaths.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
+import {
+  DATA_DIRECTORY_POINTER_FILENAME,
+  parseDataDirectoryPointer,
+} from "@t3tools/shared/dataDirectory";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
 
 export interface MakeDesktopEnvironmentInput {
@@ -169,19 +173,27 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const fs = yield* FileSystem.FileSystem;
   const baseDirInput = { homeDirectory, joinPath: path.join, t3Home: config.t3Home };
   const statePaths = new Set<string>();
-  if (
-    input.isPackaged &&
-    !isDevelopment &&
-    !Option.exists(config.t3Home, (home) => !!home.trim())
-  ) {
-    for (const name of [".quixotic", ".t3"]) {
-      const database = desktopStateDatabase(path.join(homeDirectory, name), path.join);
-      if (yield* fs.exists(database).pipe(Effect.orElseSucceed(() => false)))
-        statePaths.add(database);
+  let configuredBaseDir: Option.Option<string> = Option.none();
+  if (!isDevelopment && !Option.exists(config.t3Home, (home) => !!home.trim())) {
+    const pointerPath = path.join(homeDirectory, DATA_DIRECTORY_POINTER_FILENAME);
+    const pointerRaw = yield* fs.readFileString(pointerPath).pipe(Effect.option);
+    if (Option.isSome(pointerRaw)) {
+      const parsed = parseDataDirectoryPointer(pointerRaw.value, input.platform);
+      if (parsed !== null) {
+        configuredBaseDir = Option.some(parsed.baseDir);
+      }
+    }
+    if (Option.isNone(configuredBaseDir) && input.isPackaged) {
+      for (const name of [".quixotic", ".t3"]) {
+        const database = desktopStateDatabase(path.join(homeDirectory, name), path.join);
+        if (yield* fs.exists(database).pipe(Effect.orElseSucceed(() => false)))
+          statePaths.add(database);
+      }
     }
   }
   const baseDir = resolveDesktopBaseDir({
     ...baseDirInput,
+    configuredBaseDir,
     hasState: (file) => statePaths.has(file),
   });
   const rootDir = path.resolve(input.dirname, "../../..");
