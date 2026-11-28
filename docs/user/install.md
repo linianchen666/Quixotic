@@ -1,180 +1,129 @@
-# Install Quixotic
+# Install T3 Code
 
-Quixotic runs coding agents on your own machine. Set up the host first, then
-connect from its desktop or web interface or from a mobile client.
+T3 Code runs coding agents on your computer (or server) and lets you control them from the desktop app, web app, or mobile app. Install T3 Code on the machine where your agents will run first.
 
-## Desktop
+## Requirements
 
-Check [Quixotic Releases](https://github.com/linianchen666/Quixotic/releases)
-for a build for your platform and processor. On Debian or Ubuntu, install the
-downloaded package with `sudo apt install ./<filename>.deb`. On Linux, an
-AppImage needs executable permission before you can run it.
-
-To build a desktop installer from source, install Vite+ as described in the
-[development runbook](../operations/00_development.md#first-checkout). Clone the
-repository and install dependencies:
-
-```sh
-git clone https://github.com/linianchen666/Quixotic.git
-cd Quixotic
-vp i
-```
-
-Run the command for your platform from the checkout:
-
-| Platform | Command |
-| --- | --- |
-| macOS | `vp run dist:desktop:dmg` |
-| Linux (x86-64) | `vp run dist:desktop:linux` |
-| Windows (x86-64) | `vp run dist:desktop:win` |
-| Windows (ARM64) | `vp run dist:desktop:win:arm64` |
-
-The installer is placed in `release/`. To run the desktop app in development
-without building an installer, use `vp run dev:desktop`.
+You need at least one installed, authenticated coding agent (provider) before starting a thread. You can launch T3 Code first and set up providers from the [Welcome page](./welcome-page.md) or **Settings → Providers**.
 
 ## Command line
 
-The desktop app can install the `quixotic-cli` command from **Settings → About**.
-Use it to start the server, open the desktop app in your current project with
-`quixotic-cli app`, or view commands with `quixotic-cli --help`.
+Install the `t3` command to `~/.local/bin`:
 
-To run the CLI from a source checkout with Vite+, build the web app and CLI:
-
-```sh
-vp run --filter @t3tools/web build
-vp run --filter quixotic-cli build
-vp run start
+```bash
+# macOS / Linux
+curl -fsSL https://t3.codes/install.sh | sh
 ```
 
-Run `node apps/server/dist/bin.mjs serve` to start without opening a browser
-or `node apps/server/dist/bin.mjs --help` for more commands. Update a source
-installation by pulling the latest source and rebuilding. The legacy `t3`
-alias remains available in the CLI package for scripts that use it.
+```powershell
+# Windows (PowerShell)
+irm https://t3.codes/install.ps1 | iex
+```
 
-See [remote access](./remote-access.md) to connect another device and
-[background service](./background-service.md) for native CLI service commands.
+Set `T3CODE_CHANNEL=nightly` for nightly builds or `T3CODE_VERSION=<ver>` to pin a version. To try once without installing, run `npx t3@latest` (requires Node.js; always runs the latest stable release).
+
+| Task                          | Command                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------- |
+| Start server and open web app | `t3` (or `t3 ./my-project`)                                             |
+| Start server without browser  | `t3 serve`                                                              |
+| Set up remote access          | `t3 up` ([Remote access](./remote-access.md))                           |
+| Run in the background         | `t3 service install` ([Background service](./background-service.md))    |
+| Update                        | `t3 update`                                                             |
+| Reclaim database space        | `t3 doctor` ([Details](./background-service.md#reclaim-database-space)) |
+| Uninstall                     | `t3 uninstall`                                                          |
+
+If `t3` reports a server is already running, connect with `t3 pair` or pass a separate `--base-dir`. Run `t3 --help` for all commands.
 
 ### Intel Macs
 
-Build the CLI from source on an Intel Mac. The checkout commands above use
-the bundled server and web app without requiring a standalone CLI archive.
+There is no standalone `t3` binary for Intel Macs—use the desktop app, or build a server from source with `vp` ([development runbook](../operations/00_development.md#first-checkout)):
 
-## Mobile
+```bash
+git clone https://github.com/pingdotgg/t3code
+cd t3code && vp i && vp run build:desktop
+node apps/server/dist/bin.mjs
+```
 
-Build a development client with the
-[mobile setup instructions](../../apps/mobile/README.md), then pair it with
-the machine running Quixotic. Use a pairing link over your local network or
-[Tailscale](./remote-access.md). Mobile discovery and push services require
-their own configuration for a self-hosted relay.
+## Desktop app
+
+Download from [GitHub Releases](https://github.com/pingdotgg/t3code/releases) or install via a package manager:
+
+| Platform                | Command                                                          |
+| ----------------------- | ---------------------------------------------------------------- |
+| macOS                   | `brew install --cask t3-code`                                    |
+| Windows                 | `winget install T3Tools.T3Code` or `scoop install extras/t3code` |
+| Debian / Ubuntu         | `sudo apt install ./T3-Code-*.deb`                               |
+| Arch Linux              | `yay -S t3code-bin` (or `yay -S t3code-nightly-bin`)             |
+| Nix (flakes, Nix 2.30+) | `nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code`     |
+
+- **Linux AppImage**: `chmod +x ./T3-Code-*.AppImage && ./T3-Code-*.AppImage` (x86_64 and ARM64). `.deb` self-updates with a password prompt; update AUR packages via your AUR helper (`yay -Syu`).
+- **NixOS / Home Manager**: Add `pkgs.t3code` to `environment.systemPackages` or `home.packages` (`t3code-desktop` launches the app; `t3` is included). Update via Nix rather than the in-app updater.
+
+### The `t3` command
+
+The desktop app bundles `t3` and sets it up on first launch (manage anytime under **Settings → About → t3 command**). Use **Add to PATH** if needed, then open a new terminal.
+
+- **Open a folder in the running desktop app**: Run `t3 app` (or `t3 app ../my-project`) from a terminal, or drag folders from your file manager onto the desktop sidebar.
+
+### Windows Subsystem for Linux
+
+Select a WSL distro in **Settings → Sharing & access** to run agents and projects inside WSL (install provider CLIs inside that distro). T3 Code manages its own server runtime inside WSL automatically.
+
+## Mobile app
+
+Install from the [App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code) (QR codes are also in **Settings → About → Mobile app**). The mobile app connects to a server on another machine via [remote access](./remote-access.md).
+
+- Store builds work with both Stable and Nightly servers. Optional Android beta APKs are under [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
+- If the mobile app crashes on launch, open **Settings → Diagnostics** on the next launch to copy recent startup crash reports.
 
 ## Providers
 
-Open **Settings → Providers** in the web or desktop app, select the environment,
-and enable the provider you want. Installation, login, and configuration belong
-to that environment's machine, even when you connect from a phone or another
-computer.
+Open **Settings → Providers** (web or desktop), select the environment, and enable the providers you use. Installation and sign-in always happen on the **environment's machine**.
 
-| Provider            | Install and authenticate                                                                                                                                  |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Codex               | [Connect with ChatGPT](./providers-codex.md#connect-with-chatgpt), or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`. |
-| Claude              | Install [Claude Code](https://claude.com/product/claude-code), then run `claude auth login`.                                                              |
-| Cursor              | Install [Cursor CLI](https://cursor.com/cli), then run `agent login`.                                                                                     |
-| Grok Build          | Install [Grok Build CLI](https://x.ai/cli), then run `grok login`.                                                                                        |
-| Kiro                | Install [Kiro CLI](https://kiro.dev/docs/cli/), then run `kiro-cli login`.                                                                                |
-| OpenCode            | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                                                                  |
-| Antigravity         | Install and sign in with Google from Quixotic's provider settings.                                                                                         |
-| Pi                  | Install [Pi](./providers-pi.md#set-up-pi) with Node.js 22.19 or newer, then run `pi` and `/login`.                                                        |
-| Muse Code           | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
-| fx                  | Install [fx](https://fx.sh) with `curl -fsSL https://fx.sh/setup.sh \| bash`, then run `fx login`.                                                        |
-| ACP Registry agents | Add GitHub Copilot and other [ACP agents](./providers-acp.md#add-an-agent) from **Settings → Providers → Add provider → Show more**.                      |
+| Provider         | Install and authenticate                                                                                                 | Guide                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
+| **Codex**        | Connect with ChatGPT in Settings, or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`. | [Codex](./providers-codex.md)             |
+| **Claude**       | Install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`.                               | [Claude](./providers-claude.md)           |
+| **Cursor**       | Sign in in Settings or install [Cursor CLI](https://cursor.com/cli) and run `agent login`.                               | [Cursor](./cursor.md)                     |
+| **Grok Build**   | Install [Grok Build CLI](https://x.ai/cli) and run `grok login`.                                                         | [Grok](./providers-grok.md)               |
+| **Antigravity**  | Install managed runtime and sign in with Google in Settings.                                                             | [Antigravity](./providers-antigravity.md) |
+| **OpenCode**     | Install [OpenCode](https://opencode.ai) and run `opencode auth login`.                                                   | [OpenCode](./providers-opencode.md)       |
+| **Kiro**         | Install [Kiro CLI](https://kiro.dev/docs/cli/) and run `kiro-cli login`.                                                 | [Kiro](./providers-kiro.md)               |
+| **Pi**           | Install [Pi](./providers-pi.md) (Node.js 22.19+) and run `pi` → `/login`.                                                | [Pi](./providers-pi.md)                   |
+| **Muse Code**    | Install [Muse Code](https://dev.meta.ai/docs/muse-code) and run `muse login`.                                            | [Muse Code](./providers-muse.md)          |
+| **fx**           | Install [fx](https://fx.sh) and run `fx login`.                                                                          | [fx](./providers-fx.md)                   |
+| **ACP Registry** | Add GitHub Copilot and other agents in **Settings → Providers → Add provider → Show more**.                              | [ACP](./providers-acp.md)                 |
 
-Provider CLIs must be on the server's `PATH`. If Quixotic cannot find one, set its
-**Binary path** in provider settings, especially when using a version manager.
-Cursor's executable is `cursor-agent`, although its login command is
-`agent login`. Codex connected through ChatGPT and Antigravity can use their
-managed runtimes without a `PATH` entry.
-
-Quixotic warns when a provider version has known compatibility problems with your
-release. Check **Settings → Providers** on that environment for the recommended
-version or range. When its package manager supports installing a specific version,
-you can install the recommendation there. Otherwise use the provider's installer
-on the environment's machine. An unlisted version is unverified.
-
-When a provider CLI is behind its latest release, its provider card shows the
-available version. **Update now** runs the installer that owns the CLI
-(Homebrew, mise, or a global npm, pnpm, Yarn, Bun, Volta, or Vite+ install), or
-the CLI's own update command when Quixotic cannot tell. Claude, Codex, and
-OpenCode installs Quixotic cannot identify stay manual: update them through the
-installer you used. Quixotic runs `mise upgrade`
-only for a tool your mise config requests as `latest` when the provider's binary
-path is a mise shim or under the tool's `installs/<tool>/latest` link; update a
-pinned version, or a path into one version's directory, through mise yourself.
-Update a CLI installed with Nix through Nix.
-Cursor and Antigravity update with Quixotic. Homebrew and Chocolatey installs
-compare against the version their package manager offers, which can trail the
-npm release; update Claude installed with Chocolatey through Chocolatey.
-
-The managed runtimes for Antigravity and for Codex connected through ChatGPT
-first install the release Quixotic tested. When Quixotic finds a newer compatible
-release, their setup in **Settings → Providers** offers an update.
-
-Add another provider instance for a separate account or configuration. Each
-instance can have its own environment variables, such as API keys or a custom
-base URL. Mark secret values as sensitive; after saving, Quixotic does not display
-their original values.
-
-For provider-specific setup and accounts, see [Codex](./providers-codex.md),
-[Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
-[Antigravity](./providers-antigravity.md), [Kiro](./providers-kiro.md),
-[Pi](./providers-pi.md), [Muse Code](./providers-muse.md), [fx](./providers-fx.md), and
-[ACP Registry agents](./providers-acp.md).
+- **Binary path**: If a CLI isn't on the server's `PATH` (common with version managers), set **Binary path** in the provider's settings.
+- **Updates**: Click **Update now** on outdated provider cards (supports Homebrew, mise `latest`, npm/pnpm/Yarn/Bun/Volta/Vite+, or the CLI's own updater; update Nix, Chocolatey, or pinned mise installs manually).
+- **Multiple instances**: Add extra provider instances for separate accounts, API keys, or custom endpoints (mark secret env vars as sensitive).
 
 ### Provider check timeouts
 
-If a provider works in its CLI but Quixotic reports a timeout while checking it,
-allow more time in the Quixotic server's environment. For example, give Codex and
-Claude readiness checks 60 seconds:
+If a working CLI times out during T3 Code's readiness check, increase its probe deadline (in milliseconds) in the server's environment (or systemd override / `service.env`) and restart:
 
 ```bash
-T3CODE_CODEX_PROBE_TIMEOUT_MS=60000 T3CODE_CLAUDE_PROBE_TIMEOUT_MS=60000 quixotic-cli serve
+T3CODE_CODEX_PROBE_TIMEOUT_MS=60000 T3CODE_CLAUDE_PROBE_TIMEOUT_MS=60000 t3 serve
 ```
 
-For a remote environment, set these on the machine running the Quixotic server.
-Keep them in your launcher or service configuration to retain them across
-updates, then restart the server. For systemd, add
-`Environment=T3CODE_CODEX_PROBE_TIMEOUT_MS=60000` under `[Service]` in a service
-override, reload systemd, and restart the service. Provider instances can also
-set their own overrides in Settings → Providers.
-
-Each variable extends that provider's readiness-probe deadlines; a phase whose
-default is already longer keeps its default. Providers with several phases can
-take longer than one deadline in total. Values must be whole milliseconds no
-greater than 2147483647; unset or invalid values keep the defaults.
-
-| Provider            | Environment variable                   |
-| ------------------- | -------------------------------------- |
-| Codex               | `T3CODE_CODEX_PROBE_TIMEOUT_MS`        |
-| Claude              | `T3CODE_CLAUDE_PROBE_TIMEOUT_MS`       |
-| Cursor              | `T3CODE_CURSOR_PROBE_TIMEOUT_MS`       |
-| Antigravity         | `T3CODE_ANTIGRAVITY_PROBE_TIMEOUT_MS`  |
-| Grok                | `T3CODE_GROK_PROBE_TIMEOUT_MS`         |
-| Kiro                | `T3CODE_KIRO_PROBE_TIMEOUT_MS`         |
-| fx                  | `T3CODE_FX_PROBE_TIMEOUT_MS`           |
-| Pi                  | `T3CODE_PI_PROBE_TIMEOUT_MS`           |
-| Muse Code           | `T3CODE_MUSE_PROBE_TIMEOUT_MS`         |
-| OpenCode            | `T3CODE_OPENCODE_PROBE_TIMEOUT_MS`     |
-| ACP Registry agents | `T3CODE_ACP_REGISTRY_PROBE_TIMEOUT_MS` |
-
-Longer deadlines also take longer to report a stalled check. These overrides
-cover readiness and discovery, including OpenCode server startup. Usage and
-config enrichment retain their own shorter limits. Turn execution, package
-installation, update checks, and shutdown limits keep their existing behavior.
+| Provider     | Environment variable                   |
+| ------------ | -------------------------------------- |
+| Codex        | `T3CODE_CODEX_PROBE_TIMEOUT_MS`        |
+| Claude       | `T3CODE_CLAUDE_PROBE_TIMEOUT_MS`       |
+| Cursor       | `T3CODE_CURSOR_PROBE_TIMEOUT_MS`       |
+| Antigravity  | `T3CODE_ANTIGRAVITY_PROBE_TIMEOUT_MS`  |
+| Grok         | `T3CODE_GROK_PROBE_TIMEOUT_MS`         |
+| Kiro         | `T3CODE_KIRO_PROBE_TIMEOUT_MS`         |
+| fx           | `T3CODE_FX_PROBE_TIMEOUT_MS`           |
+| Pi           | `T3CODE_PI_PROBE_TIMEOUT_MS`           |
+| Muse Code    | `T3CODE_MUSE_PROBE_TIMEOUT_MS`         |
+| OpenCode     | `T3CODE_OPENCODE_PROBE_TIMEOUT_MS`     |
+| ACP Registry | `T3CODE_ACP_REGISTRY_PROBE_TIMEOUT_MS` |
 
 ## Next steps
 
+- [User guide index](./README.md): overview of how T3 Code works.
 - [Working with threads](./thread-sidebar.md): start tasks and organize parallel work.
-- [Permission modes](./permission-modes.md): choose when agents ask before acting.
+- [Permission modes](./permission-modes.md): control when agents ask before acting.
 - [Remote access](./remote-access.md): connect from another device.
-- [Running in the background](./background-service.md): keep a host available.
-- [Updating Quixotic](./updating.md): update the app and connected servers.
-- [Managed policy](./managed-policy.md): configure Quixotic for everyone on a machine.
+- [Updating T3 Code](./updating.md): keep apps, servers, and providers up to date.

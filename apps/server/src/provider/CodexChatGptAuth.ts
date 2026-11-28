@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { codexCallbackUrl } from "@t3tools/shared/codexAuthHandoff";
 import * as Clock from "effect/Clock";
+import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
 import * as Digest from "effect/crypto/Digest";

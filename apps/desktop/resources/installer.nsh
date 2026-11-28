@@ -6,6 +6,7 @@
   ${StrRep}
   !define T3StrRep '${StrRep}'
   Var PreviousInstallDir
+  Var t3AppWasRunning
 !endif
 
 !macro customInit
@@ -19,6 +20,9 @@
 !macroend
 
 !macro customAppRunningMessages
+  !ifndef BUILD_UNINSTALLER
+    StrCpy $t3AppWasRunning 1
+  !endif
   Push $0
   Push $1
   ${If} $IsPowerShellAvailable == 0
@@ -60,4 +64,12 @@
       RMDir "$PreviousInstallDir"
     ${EndIf}
   !endif
+
+  # The template relaunches after a silent install only with --force-run, which WinGet does not pass.
+  ${If} ${Silent}
+  ${AndIfNot} ${isForceRun}
+  ${AndIf} $t3AppWasRunning == 1
+    HideWindow
+    ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" ""
+  ${EndIf}
 !macroend

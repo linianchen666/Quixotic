@@ -538,6 +538,8 @@ export const AuthSessionState = Schema.Struct({
   scopes: Schema.optionalKey(AuthEnvironmentScopes),
   permissions: authScopeResponseFields.permissions,
   sessionMethod: Schema.optionalKey(ServerAuthSessionMethod),
+  /** This client's own session, so it can tell what it did from what another client did. */
+  sessionId: Schema.optionalKey(AuthSessionId),
   expiresAt: Schema.optionalKey(Schema.DateTimeUtc),
   /** True when this HTTP request arrived directly from an EasyTier mesh peer (zero-pairing eligible). */
   easyTierDirectPeer: Schema.optionalKey(Schema.Boolean),

@@ -5,6 +5,8 @@ import {
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Schema from "effect/Schema";
 
+import { isHostedStaticApp } from "../hostedPairing";
+
 export class CloudPublicConfigMissingError extends Schema.TaggedError<CloudPublicConfigMissingError>()(
   "CloudPublicConfigMissingError",
   {
@@ -36,6 +38,16 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
       (import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined) ?? "",
     ),
   };
+}
+
+export function setServerRelayTelemetry(_allowed: boolean | null): void {}
+
+export function relayTelemetryEnabled(): boolean | null {
+  return false;
+}
+
+export function resolveRelayTracingConfig() {
+  return null;
 }
 
 export function hasCloudPublicConfig(): boolean {

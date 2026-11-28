@@ -1,33 +1,20 @@
 # Guest links
 
-A guest link lets a teammate follow one thread in their browser and ask the agent questions, with no
-account. They see your messages and the agent's replies as they stream. Each message they send waits
-until you send or dismiss it.
+Share a single thread with a teammate in their browser—no account required. Guests see messages and agent activity stream live, and any message they send waits for your approval before running.
 
-Quixotic's desktop and mobile apps show guest controls on previously shared threads.
-Choose **Stop sharing** on the thread to revoke its link. Archiving the thread or
-unlinking the machine from T3 Connect also ends the link.
+## Prerequisites and sharing
 
-## What the guest sees
+- Enable **Settings → Labs → Guest links** on the host machine (turning it off pauses all active guest links on that machine).
+- Link the host to [T3 Connect](./remote-access.md) and keep it online while the guest uses the link.
 
-The guest sees the thread's recent history and everything after, in the same timeline you see, as
-it streams: messages and their files, the agent's replies with the images they show from your
-machine, its reasoning, plans, questions, and its work, with command output when they expand a
-command. Their composer shows the thread's model, but they cannot change it. They do not see diffs, and they cannot act on the thread: no forking,
-reverting, opening files on your machine, or answering the agent for you.
+1. Open the thread's menu (or command palette / mobile long-press) and choose **Share with guest**.
+2. Send the copied link to one person (works in one browser and expires after 24 hours).
+3. Guest messages appear at the end of the thread (**Request** in the sidebar). Choose **Send** to run as a normal turn (in the thread's current permission mode—review text and files first) or **Dismiss**.
 
-Anything the agent read or printed can show, such as a value from a file. Share only threads you
-are comfortable showing.
+Choose **Stop sharing** anytime to revoke immediately. Archiving the thread, generating a new link, or unlinking T3 Connect also ends the link.
 
-## Guest attachments
+## What guests can see and attach
 
-Guests can attach images and other files to a message: use the paperclip, paste, or drop them on
-the message box. A message holds up to 4 files and 10 MB in total. Images must be PNG, JPEG, GIF, or
-WebP. While messages wait for you, their files can total 20 MB; the guest can attach more once you
-send or dismiss some.
-
-Dismissing a message, ending the link, or archiving the thread deletes the files of messages that
-still wait. A sent message keeps its files, like any message in the thread.
-
-The guest's text and files run with the thread's current permission mode once you send them. Check
-them before you choose **Send**, as you would anything pasted from a chat.
+- **Visible**: Thread messages, files, agent replies, images, reasoning, plans, questions, and command output. Anything the agent printed is visible—only share threads you're comfortable exposing.
+- **Restricted**: No diffs, file browser, model switching, forking, reverting, or answering approvals/questions.
+- **Attachments**: Up to 4 files (10 MB total) per message (PNG, JPEG, GIF, WebP images + other files), up to 20 MB total across pending unapproved messages. Dismissing or ending the link deletes pending files.
