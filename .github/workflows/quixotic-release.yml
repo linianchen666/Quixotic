@@ -263,6 +263,7 @@ jobs:
             --build-version "${{ needs.prepare.outputs.version }}" \
             --output-dir release-linux \
             --skip-build
+          cp release-wsl/quixotic-cli-*-linux-x64.tar.gz release-linux/
 
       - name: Upload Linux release artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -271,7 +272,7 @@ jobs:
           path: |
             release-linux/*.AppImage
             release-linux/*.deb
-            release-wsl/quixotic-cli-*-linux-x64.tar.gz
+            release-linux/quixotic-cli-*-linux-x64.tar.gz
           compression-level: 0
           if-no-files-found: error
 
@@ -561,6 +562,8 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          find . -mindepth 2 -type f -exec mv -t . {} +
+          find . -mindepth 1 -type d -empty -delete
           rm -f SHA256SUMS.txt
           shopt -s nullglob
           files=(*.exe *.deb *.AppImage *.tar.gz *.apk *.ipa)
@@ -620,8 +623,10 @@ jobs:
           EOF
           )"
 
+          shopt -s nullglob
+          upload_files=(*.exe *.exe.blockmap *.deb *.AppImage *.tar.gz *.apk *.ipa SHA256SUMS.txt)
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber *
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${upload_files[@]}"
           else
             extra_flags=()
             if [[ "$PRERELEASE" == "true" ]]; then
@@ -632,5 +637,5 @@ jobs:
               --title "Quixotic ${TAG}" \
               --notes "$notes" \
               "${extra_flags[@]}" \
-              *
+              "${upload_files[@]}"
           fi
