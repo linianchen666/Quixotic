@@ -7,10 +7,9 @@ import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/prefer
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import { setConnectionTracesEnabled } from "./diagnosticsSetting";
-import { resolveTracingConfig } from "./tracing";
 
-/** False in builds without relay tracing configured, where there is nothing to turn off. */
-export const connectionTracesAvailable = resolveTracingConfig() !== null;
+/** Relay tracing is disabled in Quixotic builds, so there is nothing to toggle. */
+export const connectionTracesAvailable = false;
 
 // Shared by every switch, so a save that finishes after a newer change cannot turn sending back on.
 let latestChange = 0;

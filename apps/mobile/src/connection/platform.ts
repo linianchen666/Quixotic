@@ -143,10 +143,10 @@ const layerWakeups = Wakeups.layer({
                 return;
               }
               if (state === "active") {
-                Queue.offerUnsafe(
-                  queue,
-                  mobileApplicationActiveWakeup(backgroundedAtMs, Date.now()),
-                );
+                const wakeup = mobileApplicationActiveWakeup(backgroundedAtMs, Date.now());
+                if (wakeup !== null) {
+                  Queue.offerUnsafe(queue, wakeup);
+                }
                 backgroundedAtMs = null;
               }
             });
