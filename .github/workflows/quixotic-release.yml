@@ -543,6 +543,9 @@ jobs:
 
       - name: Generate SHA256SUMS.txt
         working-directory: dist-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
           rm -f SHA256SUMS.txt
@@ -552,7 +555,20 @@ jobs:
             echo "::error::No release artifacts found to publish."
             exit 1
           fi
-          sha256sum "${files[@]}" > SHA256SUMS.txt
+          sha256sum "${files[@]}" > SHA256SUMS.new.txt
+          # When adding or replacing a subset of assets on an existing release, preserve checksums for untouched assets.
+          if gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p SHA256SUMS.txt -O SHA256SUMS.existing.txt 2>/dev/null; then
+            cp SHA256SUMS.existing.txt SHA256SUMS.txt
+            while IFS= read -r line; do
+              fname="${line##*  }"
+              grep -vF "  ${fname}" SHA256SUMS.txt > SHA256SUMS.tmp.txt || true
+              mv SHA256SUMS.tmp.txt SHA256SUMS.txt
+              echo "$line" >> SHA256SUMS.txt
+            done < SHA256SUMS.new.txt
+            rm -f SHA256SUMS.existing.txt SHA256SUMS.new.txt
+          else
+            mv SHA256SUMS.new.txt SHA256SUMS.txt
+          fi
           cat SHA256SUMS.txt
           ls -lh
 
