@@ -279,7 +279,7 @@ jobs:
     name: Build Windows NSIS (x64)
     needs: [prepare, linux]
     if: needs.prepare.outputs.build_desktop == 'true'
-    runs-on: windows-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -291,6 +291,7 @@ jobs:
         uses: ./.github/actions/setup-ci-deps
         with:
           install-args: --filter=@t3tools/desktop... --filter=quixotic-cli... --filter=@t3tools/scripts...
+          save-pnpm-store: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
@@ -305,10 +306,16 @@ jobs:
           path: native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe
           key: quixotic-win-rm-x64-${{ hashFiles('native/resource-monitor/**') }}
 
+      - name: Install cargo-xwin
+        if: steps.win_rm_cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-xwin@0.23.1
+
       - name: Build Windows resource monitor
         if: steps.win_rm_cache.outputs.cache-hit != 'true'
         shell: bash
-        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-pc-windows-msvc
+        run: cargo xwin build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-pc-windows-msvc
 
       - name: Align package versions
         shell: bash
@@ -460,7 +467,7 @@ jobs:
     name: Build iOS unsigned IPA
     needs: prepare
     if: needs.prepare.outputs.build_ios == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 55
     env:
       APP_VARIANT: production
