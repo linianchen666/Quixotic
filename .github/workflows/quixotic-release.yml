@@ -1,0 +1,607 @@
+name: Quixotic Release (Desktop + Mobile)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (e.g. 0.1.14-beta.6). Leave empty to derive from tag or run number."
+        required: false
+        type: string
+        default: ""
+      prerelease:
+        description: "Mark GitHub Release as pre-release"
+        required: false
+        type: boolean
+        default: true
+      build_desktop:
+        description: "Build Windows (.exe), Linux (.deb + .AppImage), and Linux/WSL CLI (.tar.gz)"
+        required: false
+        type: boolean
+        default: true
+      build_android:
+        description: "Build Android APK (.apk)"
+        required: false
+        type: boolean
+        default: true
+      build_ios:
+        description: "Build iOS unsigned IPA (.ipa for AltStore / SideStore / TrollStore)"
+        required: false
+        type: boolean
+        default: true
+      publish_release:
+        description: "Create or update GitHub Release with all built artifacts"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: quixotic-release-${{ github.ref }}-${{ inputs.version || 'auto' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare & build JS bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      mobile_version: ${{ steps.meta.outputs.mobile_version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      build_desktop: ${{ steps.meta.outputs.build_desktop }}
+      build_android: ${{ steps.meta.outputs.build_android }}
+      build_ios: ${{ steps.meta.outputs.build_ios }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            if [[ "$version" == *-* ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+            build_desktop="true"
+            build_android="true"
+            build_ios="true"
+            publish_release="true"
+          else
+            raw_version="${{ inputs.version }}"
+            raw_version="${raw_version#v}"
+            if [[ -z "$raw_version" ]]; then
+              raw_version="0.1.14-ci.${GITHUB_RUN_NUMBER}"
+            fi
+            version="$raw_version"
+            tag="v${version}"
+            prerelease="${{ inputs.prerelease }}"
+            build_desktop="${{ inputs.build_desktop }}"
+            build_android="${{ inputs.build_android }}"
+            build_ios="${{ inputs.build_ios }}"
+            publish_release="${{ inputs.publish_release }}"
+          fi
+
+          # Mobile native version (CFBundleShortVersionString / versionName base) must be X.Y.Z.
+          mobile_version="$(printf '%s' "$version" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          if [[ ! "$mobile_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            mobile_version="0.1.14"
+          fi
+
+          {
+            echo "version=$version"
+            echo "mobile_version=$mobile_version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "build_desktop=$build_desktop"
+            echo "build_android=$build_android"
+            echo "build_ios=$build_ios"
+            echo "publish_release=$publish_release"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved release: tag=$tag version=$version mobile_version=$mobile_version prerelease=$prerelease"
+
+      - name: Checkout
+        if: steps.meta.outputs.build_desktop == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: false
+
+      - name: Setup dependencies
+        if: steps.meta.outputs.build_desktop == 'true'
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=quixotic-cli... --filter=@t3tools/web... --filter=@t3tools/scripts...
+
+      - name: Align package versions
+        if: steps.meta.outputs.build_desktop == 'true'
+        run: node scripts/update-release-package-versions.ts "${{ steps.meta.outputs.version }}"
+
+      - name: Build web, server, and desktop bundles
+        if: steps.meta.outputs.build_desktop == 'true'
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
+          T3CODE_RELEASE_CHANNEL: dev
+        run: vp run build:desktop
+
+      - name: Verify zero direct Google internal quota endpoints
+        if: steps.meta.outputs.build_desktop == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -rln --exclude="*.map" "https://.*cloudcode-pa\|retrieveUserQuotaSummary\|fetchAvailableModels" apps/server/dist/; then
+            echo "::error::Found banned Google internal quota endpoint in apps/server/dist/"
+            exit 1
+          fi
+          echo "OK: 0 banned Google internal quota calls in apps/server/dist/"
+
+      - name: Upload shared JS bundle
+        if: steps.meta.outputs.build_desktop == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quixotic-js-bundle
+          include-hidden-files: true
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux & WSL CLI (x64)
+    needs: prepare
+    if: needs.prepare.outputs.build_desktop == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=quixotic-cli... --filter=@t3tools/scripts...
+
+      - name: Install Linux packaging system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1 imagemagick
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Linux native helpers
+        id: rust_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor
+            native/kde-snap-shot/target/x86_64-unknown-linux-gnu/release/t3-kde-snap-shot
+            native/hyprland-snap-shot/target/x86_64-unknown-linux-gnu/release/t3-hyprland-snap-shot
+          key: quixotic-linux-native-x64-${{ hashFiles('native/resource-monitor/**', 'native/kde-snap-shot/**', 'native/hyprland-snap-shot/**') }}
+
+      - name: Build Linux resource monitor
+        if: steps.rust_cache.outputs.cache-hit != 'true'
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
+
+      - name: Download shared JS bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: quixotic-js-bundle
+          path: apps
+
+      - name: Apply production web branding
+        run: node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+
+      - name: Build standalone Linux CLI executable
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+          T3CODE_RELEASE_CHANNEL: dev
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Package Linux / WSL CLI archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/cli-rm/linux-x64" release-wsl
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$RUNNER_TEMP/cli-rm/linux-x64/t3-resource-monitor"
+          node scripts/build-cli-archive.ts \
+            --platform linux \
+            --arch x64 \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-rm" \
+            --output-dir release-wsl
+
+      - name: Smoke-test Linux / WSL CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive release-wsl/* --expect-version "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload WSL runtime archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quixotic-wsl-runtime-x64
+          path: release-wsl/quixotic-cli-*-linux-x64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Build Linux AppImage & deb
+        env:
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true"
+          T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.rust_cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
+        run: |
+          mkdir -p release-linux
+          node scripts/build-desktop-artifact.ts \
+            --platform linux \
+            --target AppImage \
+            --arch x64 \
+            --build-version "${{ needs.prepare.outputs.version }}" \
+            --output-dir release-linux \
+            --skip-build
+          node scripts/build-desktop-artifact.ts \
+            --platform linux \
+            --target deb \
+            --arch x64 \
+            --build-version "${{ needs.prepare.outputs.version }}" \
+            --output-dir release-linux \
+            --skip-build
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux
+          path: |
+            release-linux/*.AppImage
+            release-linux/*.deb
+            release-wsl/quixotic-cli-*-linux-x64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows NSIS (x64)
+    needs: [prepare, linux]
+    if: needs.prepare.outputs.build_desktop == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=quixotic-cli... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Windows resource monitor
+        id: win_rm_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe
+          key: quixotic-win-rm-x64-${{ hashFiles('native/resource-monitor/**') }}
+
+      - name: Build Windows resource monitor
+        if: steps.win_rm_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Align package versions
+        shell: bash
+        run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
+
+      - name: Download shared JS bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: quixotic-js-bundle
+          path: apps
+
+      - name: Download WSL runtime archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: quixotic-wsl-runtime-x64
+          path: release-wsl
+
+      - name: Build Windows x64 NSIS wizard installer
+        shell: bash
+        env:
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p release-windows
+          wsl_tar="$(ls release-wsl/quixotic-cli-*-linux-x64.tar.gz | head -n 1)"
+          node scripts/build-desktop-artifact.ts \
+            --platform win \
+            --target nsis \
+            --arch x64 \
+            --build-version "${{ needs.prepare.outputs.version }}" \
+            --output-dir release-windows \
+            --wsl-runtime "$wsl_tar" \
+            --skip-build
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows
+          path: |
+            release-windows/*.exe
+            release-windows/*.exe.blockmap
+          compression-level: 0
+          if-no-files-found: error
+
+  android:
+    name: Build Android APK
+    needs: prepare
+    if: needs.prepare.outputs.build_android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      APP_VARIANT: production
+      EXPO_NO_GIT_STATUS: "1"
+      T3CODE_MOBILE_VERSION: ${{ needs.prepare.outputs.mobile_version }}
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+          save-pnpm-store: false
+
+      - name: Setup Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: quixotic-gradle-${{ hashFiles('apps/mobile/package.json', 'apps/mobile/app.config.ts', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            quixotic-gradle-
+
+      - name: Expo prebuild Android
+        working-directory: apps/mobile
+        run: npx expo prebuild --clean --platform android --no-install
+
+      - name: Configure optional release signing keystore
+        working-directory: apps/mobile/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${ANDROID_KEYSTORE_PASSWORD:-}" && -n "${ANDROID_KEY_ALIAS:-}" ]]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/release.keystore
+            cat >> gradle.properties <<EOF
+          QUIXOTIC_UPLOAD_STORE_FILE=release.keystore
+          QUIXOTIC_UPLOAD_KEY_ALIAS=${ANDROID_KEY_ALIAS}
+          QUIXOTIC_UPLOAD_STORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD}
+          QUIXOTIC_UPLOAD_KEY_PASSWORD=${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}
+          EOF
+            node -e '
+              const fs = require("fs");
+              const p = "app/build.gradle";
+              let src = fs.readFileSync(p, "utf8");
+              if (!src.includes("QUIXOTIC_UPLOAD_STORE_FILE")) {
+                src = src.replace(
+                  "signingConfigs {",
+                  `signingConfigs {\n        release {\n            storeFile file(QUIXOTIC_UPLOAD_STORE_FILE)\n            storePassword QUIXOTIC_UPLOAD_STORE_PASSWORD\n            keyAlias QUIXOTIC_UPLOAD_KEY_ALIAS\n            keyPassword QUIXOTIC_UPLOAD_KEY_PASSWORD\n        }`
+                );
+                src = src.replace(
+                  /(release\s*\{[\s\S]*?)signingConfig\s+signingConfigs\.debug/,
+                  "$1signingConfig signingConfigs.release"
+                );
+                fs.writeFileSync(p, src);
+              }
+            '
+            echo "Configured custom Android release signing keystore."
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret configured; Gradle will sign release APK with debug keystore."
+          fi
+
+      - name: Build Android release APK
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          ./gradlew assembleRelease --no-daemon
+          mkdir -p "$GITHUB_WORKSPACE/release-android"
+          apk_path="$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          if [[ -z "$apk_path" ]]; then
+            echo "::error::No release APK found."
+            exit 1
+          fi
+          cp "$apk_path" "$GITHUB_WORKSPACE/release-android/Quixotic-${{ needs.prepare.outputs.version }}-android.apk"
+          ls -lh "$GITHUB_WORKSPACE/release-android/"
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-android
+          path: release-android/*.apk
+          compression-level: 0
+          if-no-files-found: error
+
+  ios:
+    name: Build iOS unsigned IPA
+    needs: prepare
+    if: needs.prepare.outputs.build_ios == 'true'
+    runs-on: macos-15
+    timeout-minutes: 55
+    env:
+      APP_VARIANT: production
+      EXPO_NO_GIT_STATUS: "1"
+      T3CODE_MOBILE_VERSION: ${{ needs.prepare.outputs.mobile_version }}
+      T3CODE_IOS_PERSONAL_TEAM: "1"
+      T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID: com.quixotic.app
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+          save-pnpm-store: false
+
+      - name: Expo prebuild iOS & CocoaPods
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          npx expo prebuild --clean --platform ios
+          cd ios
+          pod install --repo-update
+
+      - name: Build unsigned iOS IPA
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          workspace="$(ls -d *.xcworkspace | head -n 1)"
+          scheme="${workspace%.xcworkspace}"
+          echo "Building iOS workspace=$workspace scheme=$scheme"
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          app_path="$(find "$RUNNER_TEMP/ios-derived/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -n 1)"
+          if [[ -z "$app_path" ]]; then
+            echo "::error::No Release-iphoneos .app bundle produced."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ipa-stage/Payload" "$GITHUB_WORKSPACE/release-ios"
+          cp -R "$app_path" "$RUNNER_TEMP/ipa-stage/Payload/"
+          (cd "$RUNNER_TEMP/ipa-stage" && zip -qry "$GITHUB_WORKSPACE/release-ios/Quixotic-${{ needs.prepare.outputs.version }}-ios-unsigned.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/release-ios/"
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-ios
+          path: release-ios/*.ipa
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, linux, windows, android, ios]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.publish_release == 'true' &&
+      (needs.linux.result == 'success' || needs.windows.result == 'success' || needs.android.result == 'success' || needs.ios.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download built release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist-release
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: dist-release
+        run: |
+          set -euo pipefail
+          rm -f SHA256SUMS.txt
+          shopt -s nullglob
+          files=(*.exe *.deb *.AppImage *.tar.gz *.apk *.ipa)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No release artifacts found to publish."
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -lh
+
+      - name: Create or update GitHub Release
+        working-directory: dist-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+        run: |
+          set -euo pipefail
+          notes="$(cat <<EOF
+          ## Quixotic ${TAG}
+
+          自动由 GitHub Actions 构建并发布（提交 \`${GITHUB_SHA::10}\`）。
+
+          ### 构建状态
+          - Linux / WSL CLI：\`${LINUX_RESULT}\`
+          - Windows x64（向导式安装）：\`${WINDOWS_RESULT}\`
+          - Android APK：\`${ANDROID_RESULT}\`
+          - iOS 未签名 IPA（适用于 TrollStore / AltStore / SideStore / Sideloadly）：\`${IOS_RESULT}\`
+
+          ### 安装说明
+          - **Windows x64**：运行 \`Quixotic-${VERSION}-x64.exe\`，支持自定义安装目录与跨盘符无损升级。
+          - **Linux x64**：\`sudo apt install ./Quixotic-${VERSION}-amd64.deb\` 或运行 \`.AppImage\`。
+          - **Linux / WSL / ECS 网关**：解压 \`quixotic-cli-${VERSION}-linux-x64.tar.gz\`。
+          - **Android**：直接安装 \`Quixotic-${VERSION}-android.apk\`。
+          - **iOS**：通过 TrollStore / AltStore / SideStore / Sideloadly 安装 \`Quixotic-${VERSION}-ios-unsigned.ipa\`。
+
+          > Quixotic 是基于 T3 Code 源码的非官方社区分支。
+          EOF
+          )"
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber *
+          else
+            extra_flags=()
+            if [[ "$PRERELEASE" == "true" ]]; then
+              extra_flags+=(--prerelease)
+            fi
+            gh release create "$TAG" \
+              -R "$GITHUB_REPOSITORY" \
+              --title "Quixotic ${TAG}" \
+              --notes "$notes" \
+              "${extra_flags[@]}" \
+              *
+          fi
